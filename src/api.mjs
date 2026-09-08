@@ -114,7 +114,11 @@ async function itemDetail(env, id) {
 
   const [full, comments, drafts, requests] = await Promise.all([
     first(env, 'SELECT body, body_truncated, node_id FROM items WHERE id = ?', id),
-    all(env, 'SELECT * FROM comments WHERE item_id = ? ORDER BY seq', id),
+    // Storage is now unbounded, so the display slice is chosen here rather than
+    // by throwing older comments away at ingest. Newest 50, shown oldest-first.
+    all(env, `SELECT * FROM (
+        SELECT * FROM comments WHERE item_id = ? ORDER BY created_at DESC LIMIT 50
+      ) ORDER BY created_at`, id),
     all(env, 'SELECT * FROM drafts WHERE item_id = ? ORDER BY id DESC', id),
     all(env, 'SELECT * FROM draft_requests WHERE item_id = ? ORDER BY id DESC LIMIT 5', id),
   ]);

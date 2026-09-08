@@ -15,21 +15,19 @@ import { isBot, isOwner, ownerLogin, searchScope } from './config.mjs';
 
 const ITEM_BODY_MAX = 8000;
 const COMMENT_BODY_MAX = 2000;
-/** How many comments we store and show. */
-const COMMENT_TAIL = 10;
 /**
- * How many we *read* to decide who owes whom.
+ * How many comments each poll reads per thread.
  *
- * These were the same number, which meant ten bot comments could push the
- * owner's reply out of view and out of the activity calculation at once — the
- * board then said "no reply yet" about a thread the owner had already answered.
- * The display excerpt is a UI choice; the activity window is a correctness one.
+ * This used to be 10 and doubled as the storage limit, so ten bot comments
+ * could bury the owner's reply and the thread would read as unanswered. Reading
+ * is now wider than any display slice, and storage is not a slice at all —
+ * comments are keyed by node id and accumulate.
  */
 const ACTIVITY_TAIL = 50;
 const WINDOW_DAYS = 7;
 const BATCH = 25;
 
-const COMMENT_FIELDS = 'author { login __typename } createdAt body';
+const COMMENT_FIELDS = 'id author { login __typename } createdAt body';
 
 const SEARCH_QUERY = `
 query($q: String!, $type: SearchType!, $after: String) {
@@ -107,10 +105,12 @@ async function searchWindow(env, type, since, until, maxPages, { asc = false } =
  * Flatten a node's comments (including discussion replies) into one sorted list.
  *
  * Returns two views. `activity` is everything fetched and drives who-owes-whom.
- * `display` is the last few real comments and is what gets stored and shown.
- * Review stubs carry no body, so they inform activity but are kept out of the
- * display tail — they used to evict up to five real comments from both the
- * board and the drafting agent's only context.
+ * `store` is every real comment we can key by node id, and is what gets written.
+ *
+ * Storage is no longer a tail. Comments are keyed by GitHub's id and upserted,
+ * so each poll adds what it saw and leaves the rest alone; the record only ever
+ * grows. Review stubs carry no id and no body — they inform activity and are
+ * not rows.
  */
 function commentTail(node) {
   const flat = [];
@@ -123,7 +123,7 @@ function commentTail(node) {
     if (r?.createdAt) flat.push({ author: r.author, createdAt: r.createdAt, body: null, review: true });
   }
   flat.sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
-  return { activity: flat, display: flat.filter((c) => !c.review).slice(-COMMENT_TAIL) };
+  return { activity: flat, store: flat.filter((c) => !c.review && c.id) };
 }
 
 function toRow(node, owner) {
@@ -132,7 +132,7 @@ function toRow(node, owner) {
   const repo = node.repository.nameWithOwner;
   const id = `${repo}#${kind}#${node.number}`;
   const author = node.author?.login ?? null;
-  const { activity, display } = commentTail(node);
+  const { activity, store } = commentTail(node);
 
   // Who spoke last, and when did the owner last speak? Fall back to the opening
   // post so an untouched item still has a last actor.
@@ -168,7 +168,7 @@ function toRow(node, owner) {
   }
 
   return {
-    tail: display,
+    tail: store,
     id,
     values: [
       id, node.id ?? null, repo, kind, node.number, node.title, node.url,
@@ -222,47 +222,47 @@ ON CONFLICT(id) DO UPDATE SET
       THEN excluded.last_human_actor
     ELSE items.last_human_actor END`;
 
-const INSERT_COMMENT =
-  'INSERT INTO comments (item_id, seq, author, author_is_bot, created_at, body) VALUES (?,?,?,?,?,?)';
+// Keyed on GitHub's node id, so re-seeing a comment updates it in place instead
+// of requiring the whole tail to be deleted and rebuilt. `first_seen_at` is
+// preserved on conflict: it records when this poller learned of the comment,
+// which is the only honest answer to "would I have missed this?".
+const UPSERT_COMMENT = `
+INSERT INTO comments (gh_id, item_id, author, author_is_bot, created_at, body, first_seen_at)
+VALUES (?,?,?,?,?,?,?)
+ON CONFLICT(gh_id) DO UPDATE SET
+  body=excluded.body, author=excluded.author, author_is_bot=excluded.author_is_bot`;
 
 async function persist(env, nodes) {
   const owner = ownerLogin(env);
   const now = new Date().toISOString();
-  const stmts = [];
   const upsert = env.DB.prepare(UPSERT);
-  const delComments = env.DB.prepare('DELETE FROM comments WHERE item_id = ?');
-  const insComment = env.DB.prepare(INSERT_COMMENT);
+  const upComment = env.DB.prepare(UPSERT_COMMENT);
 
-  // One group per item. The group is the atomic unit: its DELETE and the
-  // re-INSERTs that replace those rows must land in the same transaction.
-  const groups = [];
+  const stmts = [];
+  let seen = 0;
   for (const node of nodes) {
     if (!node.repository) continue;
+    seen++;
     const { id, values, tail } = toRow(node, owner);
-    const g = [upsert.bind(...values, now, now), delComments.bind(id)];
-    tail.forEach((c, i) => g.push(insComment.bind(
-      id, i, c.author?.login ?? null,
-      isBot(c.author?.login, c.author?.__typename) ? 1 : 0,
-      c.createdAt ?? null, trunc(c.body, COMMENT_BODY_MAX),
-    )));
-    groups.push(g);
+    stmts.push(upsert.bind(...values, now, now));
+    for (const c of tail) {
+      stmts.push(upComment.bind(
+        c.id, id, c.author?.login ?? null,
+        isBot(c.author?.login, c.author?.__typename) ? 1 : 0,
+        c.createdAt ?? null, trunc(c.body, COMMENT_BODY_MAX), now,
+      ));
+    }
   }
 
-  // D1 caps how much one batch may carry, so chunk — but only on group
-  // boundaries. Chunking the flat statement list could put "DELETE this item's
-  // comments" in one transaction and its replacements in the next, and a
-  // failure between them erased the comment tail for good. "Every write is an
-  // idempotent upsert" was true of the items table and never true of this pair.
-  let chunk = [];
-  for (const g of groups) {
-    if (chunk.length && chunk.length + g.length > BATCH) {
-      await env.DB.batch(chunk);
-      chunk = [];
-    }
-    chunk.push(...g);
+  // D1 caps how much one batch may carry, so chunk. Every statement here is now
+  // an idempotent upsert keyed on its own id, so a chunk boundary is just a
+  // pause: a failure mid-run leaves earlier chunks applied and the next poll
+  // re-applies the rest. That was not true while comments were rebuilt by
+  // deleting the tail first.
+  for (let i = 0; i < stmts.length; i += BATCH) {
+    await env.DB.batch(stmts.slice(i, i + BATCH));
   }
-  if (chunk.length) await env.DB.batch(chunk);
-  return groups.length;
+  return seen;
 }
 
 /**

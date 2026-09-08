@@ -35,20 +35,25 @@ Computed in `src/state.mjs` — pure, deterministic, no model.
 
 | state | meaning |
 |---|---|
-| `needs_you` | a real person outside your account spoke more recently than you did |
+| `needs_you` | something arrived from outside more recently than you replied |
 | `awaiting_them` | you spoke last |
 | `done` | closed, answered, or marked by you/jdx-bot |
 | `snoozed` | hidden until a date |
-| `noise` | no outside human ever touched it (renovate, dependabot, release PRs) |
 
 The load-bearing detail is `last_human_at`: activity by a non-owner, non-bot
-account. Using "last actor" instead would let a CodeRabbit or Greptile review
-comment mask the contributor who is actually waiting on you. Bots are detected
-by GraphQL `__typename == 'Bot'` plus a list for automation running under plain
-user accounts (`src/config.mjs`).
+account. It is *preferred* over the last actor of any kind, because otherwise a
+CodeRabbit or Greptile review comment would mask the contributor who is actually
+waiting on you. Bots are detected by GraphQL `__typename == 'Bot'` plus a list
+for automation running under plain user accounts (`src/config.mjs`).
 
-A mark sticks until a **human** replies after it, so bot chatter never drags a
-handled thread back into the inbox.
+Purely automated items — renovate, dependabot, release PRs — **are** inbox work.
+They are open PRs on your repos and somebody has to merge them. They do not
+accrue urgency with age the way a person's unanswered question does, so
+`priority()` puts them in a band that cannot overlap the human one: automation
+scores at most 10, a person always scores at least 20. That is ordering only.
+They stay fully visible and fully counted.
+
+A mark sticks until something new arrives after it.
 
 ## Security model
 
@@ -166,7 +171,12 @@ GET  /api/items?state=&repo=&kind=&q=&limit=&offset=
 GET  /api/items/:id                      detail + comments + drafts + injection flags
 POST /api/items/:id/mark    {outcome, note}   outcome:null clears
 POST /api/items/:id/snooze  {days}
+POST /api/items/:id/draft-request  {note}     queue a draft for jdx-bot
 POST /api/items/:id/draft   {kind, body, rationale, confidence, flags}
+GET  /api/draft-requests?status=pending       the drafting queue
+POST /api/draft-requests/:id/claim            atomic; two pollers cannot both take one
+POST /api/draft-requests/:id/complete  {draft_id} | {error}
+POST /api/draft-requests/:id/cancel
 POST /api/drafts/:id/edit   {body}
 POST /api/drafts/:id/reject
 POST /api/drafts/:id/approve             owner email only; the only GitHub write
@@ -176,6 +186,24 @@ GET  /api/events
 
 `:id` is `owner/repo#kind#number`, URL-encoded. The list view never selects item
 bodies; they load only when you open something.
+
+## Drafting is on demand
+
+Nothing is drafted automatically. You press **ask jdx-bot to draft** on an item,
+which writes a row to `draft_requests`; jdx-bot polls the queue, claims one,
+writes a draft, and reports back. The draft then waits on the board for you to
+edit, approve or discard.
+
+The queue is a table rather than a webhook for two reasons: the agent runs on a
+machine that is not always reachable, and a request still sitting unclaimed is
+visible evidence that nothing picked it up. A dropped webhook is silent. A
+partial unique index allows at most one open request per item, so a double click
+cannot produce two drafts of the same reply.
+
+There are deliberately **no notifications**. No email, no Discord ping, no
+badge. The board is the signal — the whole point was to stop being interrupted
+by GitHub. If that turns out to be too quiet, a daily digest is the smallest
+thing to add.
 
 ## Ingest scheduling
 

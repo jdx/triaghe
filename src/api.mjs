@@ -30,8 +30,11 @@ const TRIAGE_COLUMNS = `
 const PENDING_DRAFTS =
   "(SELECT COUNT(*) FROM drafts d WHERE d.item_id = i.id AND d.status = 'pending') AS pending_drafts";
 
+const OPEN_REQUESTS = `(SELECT COUNT(*) FROM draft_requests r
+   WHERE r.item_id = i.id AND r.status IN ('pending','claimed')) AS open_requests`;
+
 const listSql = (where) => `
-SELECT ${LIST_COLUMNS}, ${TRIAGE_COLUMNS}, ${PENDING_DRAFTS}
+SELECT ${LIST_COLUMNS}, ${TRIAGE_COLUMNS}, ${PENDING_DRAFTS}, ${OPEN_REQUESTS}
 FROM items i LEFT JOIN triage t ON t.item_id = i.id
 ${where}`;
 
@@ -49,6 +52,7 @@ function decorate(row) {
     snoozed_until: row.snoozed_until ?? null,
     priority: priority(row, s.state),
     pending_drafts: row.pending_drafts ?? 0,
+    open_requests: row.open_requests ?? 0,
   };
 }
 
@@ -86,10 +90,11 @@ async function itemDetail(env, id) {
   const row = await first(env, `${listSql('WHERE i.id = ?')} LIMIT 1`, id);
   if (!row) return null;
 
-  const [full, comments, drafts] = await Promise.all([
+  const [full, comments, drafts, requests] = await Promise.all([
     first(env, 'SELECT body, body_truncated, node_id FROM items WHERE id = ?', id),
     all(env, 'SELECT * FROM comments WHERE item_id = ? ORDER BY seq', id),
     all(env, 'SELECT * FROM drafts WHERE item_id = ? ORDER BY id DESC', id),
+    all(env, 'SELECT * FROM draft_requests WHERE item_id = ? ORDER BY id DESC LIMIT 5', id),
   ]);
 
   return {
@@ -101,7 +106,80 @@ async function itemDetail(env, id) {
     },
     comments,
     drafts: drafts.map((d) => ({ ...d, flags: JSON.parse(d.flags || '[]') })),
+    draft_requests: requests,
   };
+}
+
+/**
+ * Ask jdx-bot for a draft. Anyone Access lets through may queue one — a request
+ * is only a note in a table, and the thing that actually reaches GitHub is
+ * still gated on the owner's email at approve time.
+ */
+async function requestDraft(env, id, note, identity) {
+  if (!(await first(env, 'SELECT 1 AS ok FROM items WHERE id = ?', id))) {
+    return { status: 404, body: { error: 'unknown item' } };
+  }
+  try {
+    const res = await run(env, `
+      INSERT INTO draft_requests (item_id, requested_by, requested_at, note)
+      VALUES (?,?,?,?)`,
+      id, identity.actor, new Date().toISOString(), note ?? null);
+    await log(env, identity.actor, 'draft.request', id,
+      { request_id: res.meta?.last_row_id ?? null, note: note ?? null });
+  } catch (e) {
+    // The partial unique index rejects a second open request for the same item,
+    // so a double click cannot produce two drafts of the same reply.
+    if (/UNIQUE|constraint/i.test(String(e.message))) {
+      return { status: 409, body: { error: 'a draft is already queued for this item' } };
+    }
+    throw e;
+  }
+  return { status: 200, body: await itemDetail(env, id) };
+}
+
+/**
+ * The drafting agent's side of the queue: list what is waiting, claim one, then
+ * report what happened. Claiming is a conditional UPDATE rather than a
+ * read-then-write so two overlapping polls cannot both take the same request.
+ */
+async function handleQueue(env, requestId, action, body, identity) {
+  const now = new Date().toISOString();
+
+  if (action === 'claim') {
+    const res = await run(env, `
+      UPDATE draft_requests SET status='claimed', claimed_by=?, claimed_at=?
+      WHERE id=? AND status='pending'`, identity.actor, now, requestId);
+    if (!res.meta?.changes) {
+      const cur = await first(env, 'SELECT status FROM draft_requests WHERE id=?', requestId);
+      return cur
+        ? { status: 409, body: { error: `request is ${cur.status}` } }
+        : { status: 404, body: { error: 'no such request' } };
+    }
+    const req = await first(env, 'SELECT * FROM draft_requests WHERE id=?', requestId);
+    return { status: 200, body: { request: req, detail: await itemDetail(env, req.item_id) } };
+  }
+
+  const req = await first(env, 'SELECT * FROM draft_requests WHERE id=?', requestId);
+  if (!req) return { status: 404, body: { error: 'no such request' } };
+
+  if (action === 'cancel') {
+    await run(env, "UPDATE draft_requests SET status='cancelled', completed_at=? WHERE id=?",
+      now, requestId);
+    await log(env, identity.actor, 'draft.request.cancel', req.item_id, { request_id: requestId });
+    return { status: 200, body: await itemDetail(env, req.item_id) };
+  }
+
+  // complete: either a draft landed, or the drafter is reporting why it did not.
+  // A failure must be recorded rather than leaving the request claimed forever,
+  // because a stuck 'claimed' row looks identical to an agent that is still
+  // thinking.
+  const failed = !!body.error;
+  await run(env, `
+    UPDATE draft_requests SET status=?, completed_at=?, draft_id=?, error=? WHERE id=?`,
+    failed ? 'failed' : 'done', now, body.draft_id ?? null, body.error ?? null, requestId);
+  await log(env, identity.actor, failed ? 'draft.request.failed' : 'draft.request.done',
+    req.item_id, { request_id: requestId, draft_id: body.draft_id ?? null, error: body.error ?? null });
+  return { status: 200, body: await itemDetail(env, req.item_id) };
 }
 
 async function mark(env, id, { outcome, note, actor }) {
@@ -248,7 +326,26 @@ export async function handleApi(request, env, ctx, identity) {
     return { status: 200, body: await ingestOnce(env, { full: true }) };
   }
 
-  const itemMatch = p.match(/^\/api\/items\/(.+?)(?:\/(mark|snooze|draft))?$/);
+  // The drafting queue. GET is how jdx-bot finds work; the rest is how it
+  // reports back. `draft-request` must precede `draft` in the item route's
+  // alternation below, or the shorter name wins the match.
+  if (method === 'GET' && p === '/api/draft-requests') {
+    const status = url.searchParams.get('status') || 'pending';
+    return {
+      status: 200,
+      body: await all(env, `
+        SELECT r.*, i.repo, i.kind, i.number, i.title, i.url
+        FROM draft_requests r JOIN items i ON i.id = r.item_id
+        WHERE r.status = ? ORDER BY r.id LIMIT 50`, status),
+    };
+  }
+
+  const queueMatch = p.match(/^\/api\/draft-requests\/(\d+)\/(claim|complete|cancel)$/);
+  if (queueMatch && method === 'POST') {
+    return handleQueue(env, Number(queueMatch[1]), queueMatch[2], await json(), identity);
+  }
+
+  const itemMatch = p.match(/^\/api\/items\/(.+?)(?:\/(mark|snooze|draft-request|draft))?$/);
   if (itemMatch) {
     const id = decodeURIComponent(itemMatch[1]);
     const action = itemMatch[2];
@@ -265,6 +362,10 @@ export async function handleApi(request, env, ctx, identity) {
     if (method === 'POST' && action === 'snooze') {
       const b = await json();
       return { status: 200, body: await snooze(env, id, b.days, identity.actor) };
+    }
+    if (method === 'POST' && action === 'draft-request') {
+      const b = await json();
+      return requestDraft(env, id, b.note, identity);
     }
     if (method === 'POST' && action === 'draft') {
       const b = await json();

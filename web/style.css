@@ -173,3 +173,20 @@ h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: v
   aside { display: none; }
   #detail { position: static; max-height: none; border-left: none; border-top: 1px solid var(--line); }
 }
+
+/* On-demand drafting: a queued request, and the button that creates one. */
+.badge.queued { color: var(--accent); border-color: var(--accent); }
+.oc.ask { border-color: var(--accent); color: var(--accent); }
+
+.queued-note {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 12px 0;
+  padding: 9px 12px;
+  border: 1px dashed var(--accent);
+  border-radius: 6px;
+  color: var(--accent);
+}
+.queued-note .dim { flex-basis: 100%; margin: 0; }

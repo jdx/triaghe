@@ -24,7 +24,6 @@ const TABS = [
   ['awaiting_them', 'Waiting'],
   ['snoozed', 'Snoozed'],
   ['done', 'Done'],
-  ['noise', 'Noise'],
   ['all', 'All'],
 ];
 
@@ -159,6 +158,7 @@ function renderList() {
     bot.append(el('span', 'why', it.triage_reason));
     bot.append(el('span', 'age', relTime(it.last_human_at || it.updated_at)));
     if (it.pending_drafts) bot.append(el('span', 'badge draft', `${it.pending_drafts} draft`));
+    if (it.open_requests) bot.append(el('span', 'badge queued', 'draft queued'));
     if (it.outcome) bot.append(el('span', 'badge done', OUTCOME_LABEL[it.outcome] ?? it.outcome));
     for (const l of it.labels.slice(0, 3)) bot.append(el('span', 'badge label', l));
     row.append(bot);
@@ -198,6 +198,23 @@ function outcomeBar(item) {
   add('ignore', () => markItem(item.id, 'ignored'), 'muted');
   add('snooze 7d', () => snoozeItem(item.id, 7), 'muted');
   if (item.outcome) add('undo', () => markItem(item.id, null), 'muted');
+
+  // Drafting is on demand. Queueing a request is all this does; the draft shows
+  // up on this item whenever jdx-bot next picks the queue up.
+  if (!item.open_requests) {
+    const ask = add('ask jdx-bot to draft', async () => {
+      try {
+        state.detail = await api(`/api/items/${encodeURIComponent(item.id)}/draft-request`, {
+          method: 'POST', body: JSON.stringify({ note: null }),
+        });
+        await refresh();
+        renderDetail();
+      } catch (e) {
+        bar.append(el('span', 'warn small', e.message));
+      }
+    }, 'ask');
+    ask.title = 'Queue a draft reply for jdx-bot to write. Nothing is posted without your approval.';
+  }
   return bar;
 }
 
@@ -253,8 +270,27 @@ function renderDetail() {
     }
   }
 
+  const open = (state.detail.draft_requests ?? [])
+    .filter((r) => r.status === 'pending' || r.status === 'claimed');
+  for (const r of open) {
+    const q = el('div', 'queued-note');
+    q.append(el('strong', null, r.status === 'claimed' ? 'jdx-bot is drafting' : 'draft queued'));
+    q.append(el('span', 'age', relTime(r.requested_at)));
+    if (r.note) q.append(el('p', 'dim', r.note));
+    const cancel = el('button', 'oc muted', 'cancel');
+    cancel.onclick = async () => {
+      state.detail = await api(`/api/draft-requests/${r.id}/cancel`, { method: 'POST' });
+      await refresh();
+      renderDetail();
+    };
+    q.append(cancel);
+    pane.append(q);
+  }
+
   pane.append(el('h3', null, 'Drafts'));
-  if (!drafts.length) pane.append(el('p', 'dim', 'No drafts. Ask jdx-bot to draft a reply.'));
+  if (!drafts.length && !open.length) {
+    pane.append(el('p', 'dim', 'No drafts. Use “ask jdx-bot to draft” above.'));
+  }
   for (const d of drafts) {
     const box = el('div', `draft ${d.status}`);
     const dh = el('div', 'chead');

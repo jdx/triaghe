@@ -36,7 +36,7 @@ jobs:
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          command: d1 migrations apply gh-inbox --remote
+          command: d1 migrations apply triaghe --remote
 
       - name: Deploy Worker
         uses: cloudflare/wrangler-action@v3

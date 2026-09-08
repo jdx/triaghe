@@ -84,7 +84,7 @@ async function token(env) {
       headers: {
         authorization: `Bearer ${await appJwt(env)}`,
         accept: 'application/vnd.github+json',
-        'user-agent': 'gh-inbox',
+        'user-agent': 'triaghe',
       },
     },
   );
@@ -116,7 +116,7 @@ export async function graphql(env, query, variables = {}, { retries = 3 } = {}) 
       headers: {
         authorization: `bearer ${await token(env)}`,
         'content-type': 'application/json',
-        'user-agent': 'gh-inbox',
+        'user-agent': 'triaghe',
       },
       body: JSON.stringify({ query, variables }),
     });
@@ -149,7 +149,7 @@ export async function rest(env, method, path, body) {
       authorization: `bearer ${await token(env)}`,
       accept: 'application/vnd.github+json',
       'content-type': 'application/json',
-      'user-agent': 'gh-inbox',
+      'user-agent': 'triaghe',
     },
     body: body ? JSON.stringify(body) : undefined,
   });

@@ -5,10 +5,10 @@
  */
 
 /** The account whose inbox this is. Items authored by them are not inbound work. */
-export const ownerLogin = (env) => env.GH_INBOX_OWNER || 'jdx';
+export const ownerLogin = (env) => env.TRIAGHE_OWNER || 'jdx';
 
 /** Search scope. `user:jdx` covers every repo the account owns. */
-export const searchScope = (env) => env.GH_INBOX_SCOPE || `user:${ownerLogin(env)}`;
+export const searchScope = (env) => env.TRIAGHE_SCOPE || `user:${ownerLogin(env)}`;
 
 /**
  * The single identity allowed to approve a post to GitHub. Compared against the

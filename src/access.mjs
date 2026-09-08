@@ -7,7 +7,7 @@
  * routes that were never meant to be public, and "the edge would have blocked
  * it" is an assumption rather than a check.
  *
- * This replaces the `x-gh-inbox-actor` header the loopback version used. That
+ * This replaces the `x-triaghe-actor` header the loopback version used. That
  * header was fine on 127.0.0.1 and is not fine on the internet: it let the
  * caller pick its own privilege level. Here the distinction is cryptographic:
  *
@@ -98,7 +98,7 @@ export async function identify(request, env) {
   if (local && env.DEV_IDENTITY) {
     const agent = env.DEV_IDENTITY === 'agent';
     return {
-      actor: agent ? 'jdx-bot' : env.GH_INBOX_OWNER || 'jdx',
+      actor: agent ? 'jdx-bot' : env.TRIAGHE_OWNER || 'jdx',
       email: agent ? null : env.OWNER_EMAIL || null,
       canApprove: !agent,
       dev: true,
@@ -117,7 +117,7 @@ export async function identify(request, env) {
   const email = (claims.email || '').toLowerCase();
   if (email) {
     return {
-      actor: env.GH_INBOX_OWNER || 'jdx',
+      actor: env.TRIAGHE_OWNER || 'jdx',
       email,
       canApprove: email === (env.OWNER_EMAIL || '').toLowerCase(),
     };

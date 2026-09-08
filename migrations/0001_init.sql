@@ -1,4 +1,4 @@
--- gh-inbox schema for D1. All content from GitHub is UNTRUSTED input.
+-- triaghe schema for D1. All content from GitHub is UNTRUSTED input.
 -- Nothing in this database is ever executed, interpolated into a shell, or
 -- rendered as HTML.
 --
@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS items (
   last_actor         TEXT,
   last_actor_is_bot  INTEGER NOT NULL DEFAULT 0,
   last_actor_at      TEXT,
-  last_owner_at      TEXT,                 -- last time GH_INBOX_OWNER spoke on this item
+  last_owner_at      TEXT,                 -- last time TRIAGHE_OWNER spoke on this item
   -- Last activity by a real person who is not the owner. This, not last_actor,
   -- is what decides whether something is waiting on you: a bot reviewer piling
   -- onto a contributor's PR must not mask the contributor's original ask.

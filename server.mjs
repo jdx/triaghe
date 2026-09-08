@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * gh-inbox API + dashboard. Binds to loopback; expose over the tailnet with
+ * triaghe API + dashboard. Binds to loopback; expose over the tailnet with
  * `tailscale serve`. See README for the security model.
  */
 import { createServer } from 'node:http';
@@ -163,7 +163,7 @@ function stats() {
 
 async function api(req, res, url) {
   const p = url.pathname;
-  const actor = req.headers['x-gh-inbox-actor'] === 'agent' ? 'jdx-bot' : OWNER_LOGIN;
+  const actor = req.headers['x-triaghe-actor'] === 'agent' ? 'jdx-bot' : OWNER_LOGIN;
 
   if (req.method === 'GET' && p === '/api/stats') return send(res, 200, stats());
   if (req.method === 'GET' && p === '/api/items') return send(res, 200, listItems(url.searchParams));
@@ -264,5 +264,5 @@ createServer(async (req, res) => {
     return send(res, 500, { error: String(e.message) });
   }
 }).listen(PORT, '127.0.0.1', () => {
-  process.stderr.write(`gh-inbox on http://127.0.0.1:${PORT} (owner: ${OWNER_LOGIN})\n`);
+  process.stderr.write(`triaghe on http://127.0.0.1:${PORT} (owner: ${OWNER_LOGIN})\n`);
 });

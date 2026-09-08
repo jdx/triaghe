@@ -1,4 +1,4 @@
--- gh-inbox schema. All content from GitHub is UNTRUSTED input.
+-- triaghe schema. All content from GitHub is UNTRUSTED input.
 -- Nothing in this DB is ever executed, interpolated into a shell, or rendered as HTML.
 
 PRAGMA journal_mode = WAL;

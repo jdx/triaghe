@@ -1,5 +1,5 @@
 /**
- * gh-inbox client.
+ * triaghe client.
  *
  * Hard rule: every value that came from GitHub reaches the DOM through
  * textContent or a text node. There is no innerHTML anywhere in this file, so

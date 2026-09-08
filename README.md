@@ -1,4 +1,4 @@
-# gh-inbox
+# triaghe
 
 A triage board for inbound work on your GitHub projects: new discussions,
 issues and PRs from other people, with your own activity and bot noise filtered
@@ -78,7 +78,7 @@ requires a verified Cloudflare Access JWT whose `email` claim equals
 `OWNER_EMAIL`. jdx-bot reaches the API through an Access **service token**, and
 a service token's JWT carries `common_name` and *no* email claim — so the agent
 cannot reach the approve path even if its credentials leak. This replaced an
-`x-gh-inbox-actor` header, which was fine on loopback and would have been a hole
+`x-triaghe-actor` header, which was fine on loopback and would have been a hole
 on the internet: it let the caller choose its own privilege level.
 
 Approve posts `drafts.body` **verbatim** and never reads the item body, so no
@@ -115,8 +115,8 @@ These steps need the repository owner; the rest is automated.
 **1. Cloudflare D1**
 
 ```sh
-npx wrangler d1 create gh-inbox        # paste database_id into wrangler.toml
-npx wrangler d1 migrations apply gh-inbox --remote
+npx wrangler d1 create triaghe        # paste database_id into wrangler.toml
+npx wrangler d1 migrations apply triaghe --remote
 ```
 
 **2. GitHub App** — create at `https://github.com/settings/apps/new`.
@@ -153,7 +153,7 @@ secret and the workflow does not run on `pull_request`.
 
 ```sh
 npm install
-npx wrangler d1 migrations apply gh-inbox --local
+npx wrangler d1 migrations apply triaghe --local
 echo 'DEV_IDENTITY=owner' > .dev.vars    # or 'agent' to test the approve gate
 npx wrangler dev
 ```
@@ -223,5 +223,5 @@ three months and dying against the CPU limit.
 `server.mjs`, `ingest.mjs` and `lib/` are the original `node:sqlite` version
 that runs on loopback. It still works and is kept until the deployed Worker has
 been used in anger. It has no Access layer — it binds `127.0.0.1` and trusts an
-`x-gh-inbox-actor` header, which is only safe because nothing can reach it.
+`x-triaghe-actor` header, which is only safe because nothing can reach it.
 Delete it once the Worker is proven.

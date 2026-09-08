@@ -1,5 +1,5 @@
 /**
- * gh-inbox on Cloudflare Workers.
+ * triaghe on Cloudflare Workers.
  *
  *   fetch      Access-gated JSON API + the board
  *   scheduled  incremental poll every 15 minutes, plus one backfill window

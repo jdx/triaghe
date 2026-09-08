@@ -17,6 +17,13 @@ const state = {
   cursor: 0,
   detail: null,
   stats: { by_state: {}, repos: [] },
+  limit: 200,
+  offset: 0,
+  total: 0,
+  // Draft text the owner has typed but not yet approved, keyed by draft id.
+  // The 60s auto-refresh rebuilds the detail pane from server state; without
+  // this, it silently replaced whatever was half-written in the textarea.
+  draftEdits: new Map(),
 };
 
 const TABS = [
@@ -77,7 +84,11 @@ async function api(path, options) {
 }
 
 async function refresh() {
-  const params = new URLSearchParams({ state: state.tab });
+  const params = new URLSearchParams({
+    state: state.tab,
+    limit: String(state.limit),
+    offset: String(state.offset),
+  });
   if (state.repo) params.set('repo', state.repo);
   if (state.kind) params.set('kind', state.kind);
   if (state.q) params.set('q', state.q);
@@ -89,6 +100,12 @@ async function refresh() {
   ]);
   state.items = page.items;
   state.total = page.total;
+  // A filter change can shrink the result set under the current offset; without
+  // this the board shows an empty page and no way back.
+  if (state.offset && !page.items.length && page.total) {
+    state.offset = 0;
+    return refresh();
+  }
   state.stats = stats;
   state.cursor = Math.min(state.cursor, Math.max(state.items.length - 1, 0));
   render();
@@ -103,7 +120,7 @@ function renderTabs() {
     const count = key === 'all' ? state.stats.total : (state.stats.by_state?.[key] ?? 0);
     const b = el('button', key === state.tab ? 'tab active' : 'tab');
     b.append(el('span', null, label), el('span', 'count', count ?? 0));
-    b.onclick = () => { state.tab = key; state.cursor = 0; refresh(); };
+    b.onclick = () => { state.tab = key; state.cursor = 0; state.offset = 0; refresh(); };
     nav.append(b);
   }
 }
@@ -118,16 +135,16 @@ function renderFacets() {
     li.append(b);
     return li;
   };
-  repos.append(mk('all repos', !state.repo, () => { state.repo = null; refresh(); }));
+  repos.append(mk('all repos', !state.repo, () => { state.repo = null; state.offset = 0; refresh(); }));
   for (const r of state.stats.repos ?? []) {
-    repos.append(mk(r.replace(/^.*\//, ''), state.repo === r, () => { state.repo = r; refresh(); }));
+    repos.append(mk(r.replace(/^.*\//, ''), state.repo === r, () => { state.repo = r; state.offset = 0; refresh(); }));
   }
 
   const kinds = $('#kinds');
   kinds.replaceChildren();
-  kinds.append(mk('all', !state.kind, () => { state.kind = null; refresh(); }));
+  kinds.append(mk('all', !state.kind, () => { state.kind = null; state.offset = 0; refresh(); }));
   for (const k of ['discussion', 'issue', 'pr']) {
-    kinds.append(mk(k, state.kind === k, () => { state.kind = k; refresh(); }));
+    kinds.append(mk(k, state.kind === k, () => { state.kind = k; state.offset = 0; refresh(); }));
   }
 }
 
@@ -168,6 +185,25 @@ function renderList() {
 
   const active = list.querySelector('.cursor');
   if (active) active.scrollIntoView({ block: 'nearest' });
+
+  // The API has always paginated; the board never exposed it, so anything past
+  // the first page was unreachable without narrowing the filters.
+  const shown = state.offset + state.items.length;
+  if (state.total > state.items.length) {
+    const pager = el('div', 'pager');
+    const prev = el('button', 'oc muted', '← previous');
+    prev.disabled = state.offset === 0;
+    prev.onclick = () => {
+      state.offset = Math.max(0, state.offset - state.limit);
+      state.cursor = 0;
+      refresh();
+    };
+    const next = el('button', 'oc muted', 'next →');
+    next.disabled = shown >= state.total;
+    next.onclick = () => { state.offset = shown; state.cursor = 0; refresh(); };
+    pager.append(prev, el('span', 'dim', `${state.offset + 1}–${shown} of ${state.total}`), next);
+    list.append(pager);
+  }
 }
 
 /**
@@ -305,8 +341,16 @@ function renderDetail() {
     if (d.rationale) box.append(el('p', 'dim', d.rationale));
 
     const ta = el('textarea', 'draft-body');
-    ta.value = d.body;
+    // Prefer an unsaved local edit over the server copy, so a background
+    // refresh cannot discard what is being typed.
+    ta.value = state.draftEdits.get(d.id) ?? d.body;
     ta.readOnly = d.status !== 'pending';
+    if (!ta.readOnly) {
+      ta.oninput = () => {
+        if (ta.value === d.body) state.draftEdits.delete(d.id);
+        else state.draftEdits.set(d.id, ta.value);
+      };
+    }
     box.append(ta);
 
     if (d.status === 'pending') {
@@ -315,20 +359,42 @@ function renderDetail() {
       approve.onclick = async () => {
         approve.disabled = true;
         try {
+          // Approve names the revision this pane is showing. If the drafting
+          // agent rewrote the draft since it was rendered, the server refuses
+          // rather than posting text nobody read.
+          let revision = d.revision;
           if (ta.value !== d.body) {
-            await api(`/api/drafts/${d.id}/edit`, { method: 'POST', body: JSON.stringify({ body: ta.value }) });
+            const edited = await api(`/api/drafts/${d.id}/edit`, {
+              method: 'POST', body: JSON.stringify({ body: ta.value }),
+            });
+            state.detail = edited;
+            revision = edited.drafts?.find((x) => x.id === d.id)?.revision ?? revision;
           }
-          state.detail = await api(`/api/drafts/${d.id}/approve`, { method: 'POST' });
+          state.detail = await api(`/api/drafts/${d.id}/approve`, {
+            method: 'POST', body: JSON.stringify({ expected_revision: revision }),
+          });
+          state.draftEdits.delete(d.id);
           await refresh();
           renderDetail();
         } catch (e) {
           approve.disabled = false;
           box.append(el('div', 'warn small', `post failed: ${e.message}`));
+          // A stale revision means the text changed underneath: re-read it so
+          // the pane shows what the server actually holds before a second try.
+          if (/changed since you read it/.test(e.message)) {
+            state.draftEdits.delete(d.id);
+            state.detail = await api(`/api/items/${encodeURIComponent(d.item_id)}`);
+            renderDetail();
+          }
         }
       };
       const reject = el('button', 'oc muted', 'discard');
       reject.onclick = async () => {
         state.detail = await api(`/api/drafts/${d.id}/reject`, { method: 'POST' });
+        state.draftEdits.delete(d.id);
+        // Discarding changes the pending-draft count the list badge shows, so
+        // it needs the same refresh the other outcome buttons do.
+        await refresh();
         renderDetail();
       };
       actions.append(approve, reject);
@@ -347,9 +413,23 @@ function render() {
   renderList();
   renderDetail();
   const s = state.stats;
-  $('#meta').textContent = s.last_ingest
+  const meta = $('#meta');
+  meta.replaceChildren();
+  meta.append(el('span', null, s.last_ingest
     ? `${s.inbox} in inbox · synced ${relTime(s.last_ingest)}`
-    : 'never synced';
+    : 'never synced'));
+
+  // A board that silently knows less than it claims is worse than no board, so
+  // the edges of its coverage are shown rather than inferred.
+  if (s.last_truncated) {
+    meta.append(el('span', 'warn small',
+      ' · last sync hit its page limit — some updates are not in yet'));
+  } else if (s.last_ingest && !s.backfill_complete && s.backfill_cursor) {
+    meta.append(el('span', 'dim',
+      ` · history back to ${s.backfill_cursor.slice(0, 10)}, still filling in`));
+  } else if (s.horizon) {
+    meta.append(el('span', 'dim', ` · history from ${s.horizon.slice(0, 10)}`));
+  }
 }
 
 /* ---------- actions ---------- */
@@ -404,7 +484,7 @@ let searchTimer;
 $('#search').addEventListener('input', (e) => {
   clearTimeout(searchTimer);
   const v = e.target.value;
-  searchTimer = setTimeout(() => { state.q = v; state.cursor = 0; refresh(); }, 200);
+  searchTimer = setTimeout(() => { state.q = v; state.cursor = 0; state.offset = 0; refresh(); }, 200);
 });
 
 setInterval(refresh, 60_000);

@@ -116,10 +116,15 @@ export async function identify(request, env) {
 
   const email = (claims.email || '').toLowerCase();
   if (email) {
+    // Only the owner's address is logged as the owner. Access can be widened to
+    // a whole domain, and every signed-in human used to be recorded as `jdx` —
+    // which made the audit log claim the owner performed triage they never saw.
+    // Anyone else is identified by the address that actually authenticated.
+    const owner = email === (env.OWNER_EMAIL || '').toLowerCase();
     return {
-      actor: env.TRIAGHE_OWNER || 'jdx',
+      actor: owner ? (env.TRIAGHE_OWNER || 'jdx') : email,
       email,
-      canApprove: email === (env.OWNER_EMAIL || '').toLowerCase(),
+      canApprove: owner,
     };
   }
 

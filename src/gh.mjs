@@ -121,10 +121,25 @@ export async function graphql(env, query, variables = {}, { retries = 3 } = {}) 
       body: JSON.stringify({ query, variables }),
     });
 
+    // GitHub answers 403 both for "slow down" and for "this key is not allowed
+    // here". Retrying the second is pure waste: a revoked key or an uninstalled
+    // App burned three backoffs and then reported "rate limited", discarding the
+    // response body that said what was actually wrong.
     if (res.status === 403 || res.status === 429) {
-      if (attempt >= retries) throw new Error(`rate limited after ${retries} retries`);
-      const after = Number(res.headers.get('retry-after') || 0) * 1000;
-      await sleep(Math.min(after || 2 ** attempt * 2000, 10_000));
+      const body = await res.text();
+      const retryAfter = Number(res.headers.get('retry-after') || 0);
+      const throttled = res.status === 429
+        || retryAfter > 0
+        || res.headers.get('x-ratelimit-remaining') === '0'
+        || /rate limit|abuse detection|try again later/i.test(body);
+
+      if (!throttled) {
+        throw new Error(`github ${res.status} (not rate limiting): ${body.slice(0, 300)}`);
+      }
+      if (attempt >= retries) {
+        throw new Error(`rate limited after ${retries} retries: ${body.slice(0, 200)}`);
+      }
+      await sleep(Math.min(retryAfter * 1000 || 2 ** attempt * 2000, 10_000));
       continue;
     }
 
@@ -141,19 +156,38 @@ export async function graphql(env, query, variables = {}, { retries = 3 } = {}) 
   }
 }
 
-/** REST helper, used only by the write path. */
+/**
+ * REST helper, used only by the write path.
+ *
+ * Errors carry `uncertain`, which the approve path needs. A 4xx is a refusal:
+ * nothing was created, and saying so is safe. A dropped connection or a 5xx may
+ * have created the comment and lost the response — reporting that as a plain
+ * failure invites a retry that posts the same reply twice.
+ */
 export async function rest(env, method, path, body) {
-  const res = await fetch(`https://api.github.com${path}`, {
-    method,
-    headers: {
-      authorization: `bearer ${await token(env)}`,
-      accept: 'application/vnd.github+json',
-      'content-type': 'application/json',
-      'user-agent': 'triaghe',
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  const writing = method !== 'GET' && method !== 'HEAD';
+  let res;
+  try {
+    res = await fetch(`https://api.github.com${path}`, {
+      method,
+      headers: {
+        authorization: `bearer ${await token(env)}`,
+        accept: 'application/vnd.github+json',
+        'content-type': 'application/json',
+        'user-agent': 'triaghe',
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  } catch (e) {
+    throw Object.assign(new Error(`github request failed: ${e.message}`), { uncertain: writing });
+  }
+
   const text = await res.text();
-  if (!res.ok) throw new Error(`github ${res.status}: ${text.slice(0, 300)}`);
+  if (!res.ok) {
+    throw Object.assign(
+      new Error(`github ${res.status}: ${text.slice(0, 300)}`),
+      { status: res.status, uncertain: writing && res.status >= 500 },
+    );
+  }
   return text ? JSON.parse(text) : null;
 }

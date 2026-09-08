@@ -190,3 +190,15 @@ h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: v
   color: var(--accent);
 }
 .queued-note .dim { flex-basis: 100%; margin: 0; }
+
+/* List pager. The API always paginated; this is the control that makes pages
+   past the first reachable. */
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 14px;
+  border-top: 1px solid var(--line);
+}
+.pager .oc:disabled { opacity: .4; cursor: default; }

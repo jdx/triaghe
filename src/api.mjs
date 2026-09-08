@@ -27,6 +27,16 @@ const LIST_COLUMNS = `
 const TRIAGE_COLUMNS = `
   t.outcome, t.note, t.marked_by, t.marked_at, t.marked_at_activity, t.snoozed_until`;
 
+/**
+ * Exactly what computeState reads, and nothing else. /api/stats runs on every
+ * board refresh alongside /api/items; selecting the full LIST_COLUMNS here made
+ * the cheapest request in the app scan the same width as the most expensive one.
+ */
+const STATE_COLUMNS = `
+  i.state, i.is_answered, i.last_actor, i.last_actor_at, i.last_owner_at,
+  i.last_human_at, i.last_human_actor,
+  t.outcome, t.marked_at_activity, t.snoozed_until`;
+
 const PENDING_DRAFTS =
   "(SELECT COUNT(*) FROM drafts d WHERE d.item_id = i.id AND d.status = 'pending') AS pending_drafts";
 
@@ -81,9 +91,21 @@ async function listItems(env, params) {
     b.priority - a.priority
     || Date.parse(b.last_human_at || b.updated_at) - Date.parse(a.last_human_at || a.updated_at));
 
-  const limit = Math.min(Number(params.get('limit') || 200), 500);
-  const offset = Number(params.get('offset') || 0);
-  return { total: out.length, items: out.slice(offset, offset + limit) };
+  // Parse defensively: `?limit=all` used to reach Math.min(NaN, 500) and return
+  // a 200 claiming `total: 812` with an empty array. A bad page argument is the
+  // caller's mistake, but silently answering "there are 812, here are none" is
+  // ours.
+  const limit = clampInt(params.get('limit'), 200, 1, 500);
+  const offset = clampInt(params.get('offset'), 0, 0, Number.MAX_SAFE_INTEGER);
+  return { total: out.length, limit, offset, items: out.slice(offset, offset + limit) };
+}
+
+/** Integer query params: fall back to `dflt` unless the value is a real number. */
+function clampInt(raw, dflt, min, max) {
+  if (raw == null || raw === '') return dflt;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return dflt;
+  return Math.min(Math.max(Math.trunc(n), min), max);
 }
 
 async function itemDetail(env, id) {
@@ -162,9 +184,16 @@ async function handleQueue(env, requestId, action, body, identity) {
   const req = await first(env, 'SELECT * FROM draft_requests WHERE id=?', requestId);
   if (!req) return { status: 404, body: { error: 'no such request' } };
 
+  // Both transitions below are guarded on the states they may legally leave.
+  // Without the guard a stale board could cancel an already-completed request,
+  // flipping a finished row to 'cancelled' and orphaning the draft it produced.
+  const OPEN = "status IN ('pending','claimed')";
+
   if (action === 'cancel') {
-    await run(env, "UPDATE draft_requests SET status='cancelled', completed_at=? WHERE id=?",
+    const res = await run(env,
+      `UPDATE draft_requests SET status='cancelled', completed_at=? WHERE id=? AND ${OPEN}`,
       now, requestId);
+    if (!res.meta?.changes) return { status: 409, body: { error: `request is ${req.status}` } };
     await log(env, identity.actor, 'draft.request.cancel', req.item_id, { request_id: requestId });
     return { status: 200, body: await itemDetail(env, req.item_id) };
   }
@@ -174,9 +203,11 @@ async function handleQueue(env, requestId, action, body, identity) {
   // because a stuck 'claimed' row looks identical to an agent that is still
   // thinking.
   const failed = !!body.error;
-  await run(env, `
-    UPDATE draft_requests SET status=?, completed_at=?, draft_id=?, error=? WHERE id=?`,
+  const res = await run(env, `
+    UPDATE draft_requests SET status=?, completed_at=?, draft_id=?, error=?
+    WHERE id=? AND ${OPEN}`,
     failed ? 'failed' : 'done', now, body.draft_id ?? null, body.error ?? null, requestId);
+  if (!res.meta?.changes) return { status: 409, body: { error: `request is ${req.status}` } };
   await log(env, identity.actor, failed ? 'draft.request.failed' : 'draft.request.done',
     req.item_id, { request_id: requestId, draft_id: body.draft_id ?? null, error: body.error ?? null });
   return { status: 200, body: await itemDetail(env, req.item_id) };
@@ -205,7 +236,13 @@ async function mark(env, id, { outcome, note, actor }) {
 }
 
 async function snooze(env, id, days, actor) {
-  const until = new Date(Date.now() + Number(days || 7) * 86400000).toISOString();
+  // `{"days":"7d"}` used to produce new Date(NaN).toISOString(), which throws
+  // RangeError and surfaced as a 500 with a raw JS message.
+  const n = Number(days ?? 7);
+  if (!Number.isFinite(n) || n <= 0 || n > 3650) {
+    return { error: 'days must be a number between 1 and 3650' };
+  }
+  const until = new Date(Date.now() + n * 86400000).toISOString();
   await run(env, `
     INSERT INTO triage (item_id, snoozed_until, marked_by, marked_at)
     VALUES (?,?,?,?)
@@ -221,7 +258,7 @@ async function stats(env) {
   // most often, so it stays as cheap as possible.
   const [byState, byRepo, pending, ingest] = await Promise.all([
     all(env, `
-      SELECT ${LIST_COLUMNS}, ${TRIAGE_COLUMNS}
+      SELECT ${STATE_COLUMNS}
       FROM items i LEFT JOIN triage t ON t.item_id = i.id`),
     all(env, 'SELECT repo, COUNT(*) AS c FROM items GROUP BY repo ORDER BY c DESC'),
     first(env, "SELECT COUNT(*) AS c FROM drafts WHERE status='pending'"),
@@ -252,7 +289,12 @@ async function handleDraftAction(env, draftId, action, body, identity) {
 
   if (action === 'edit') {
     if (draft.status !== 'pending') return { status: 409, body: { error: `draft is ${draft.status}` } };
-    await run(env, 'UPDATE drafts SET body = ? WHERE id = ?', String(body.body ?? ''), draftId);
+    // Every edit bumps the revision. That is what lets approve tell "the text I
+    // read" from "the text that is there now".
+    const res = await run(env,
+      "UPDATE drafts SET body=?, revision=revision+1 WHERE id=? AND status='pending'",
+      String(body.body ?? ''), draftId);
+    if (!res.meta?.changes) return { status: 409, body: { error: 'draft is no longer pending' } };
     await log(env, identity.actor, 'draft.edit', draft.item_id, { draft_id: draftId });
     return { status: 200, body: await itemDetail(env, draft.item_id) };
   }
@@ -270,22 +312,71 @@ async function handleDraftAction(env, draftId, action, body, identity) {
   if (!identity.canApprove) {
     return { status: 403, body: { error: 'only the owner can approve a post' } };
   }
-  if (draft.status !== 'pending') return { status: 409, body: { error: `draft is ${draft.status}` } };
 
-  const item = await first(env, 'SELECT * FROM items WHERE id = ?', draft.item_id);
+  // Approval names a revision, not just a draft. Clicking approve means "post
+  // the text I just read"; without the revision the server only hears "post
+  // whatever is in row 41 right now", and the agent may have rewritten it since
+  // the pane was rendered.
+  const expected = Number(body.expected_revision);
+  if (!Number.isInteger(expected)) {
+    return { status: 400, body: { error: 'expected_revision is required to approve' } };
+  }
+
   const now = new Date().toISOString();
+
+  // One conditional UPDATE answers both questions — still pending, and still
+  // the revision you read — and claims the draft in the same statement. Two
+  // concurrent approvals cannot both pass it, so the comment cannot be posted
+  // twice. The previous read-check-write did allow exactly that.
+  const claim = await run(env, `
+    UPDATE drafts SET status='approving', decided_by=?, decided_at=?
+    WHERE id=? AND status='pending' AND revision=?`,
+    identity.actor, now, draftId, expected);
+
+  if (!claim.meta?.changes) {
+    const cur = await first(env, 'SELECT status, revision FROM drafts WHERE id=?', draftId);
+    if (!cur) return { status: 404, body: { error: 'no such draft' } };
+    if (cur.status !== 'pending') return { status: 409, body: { error: `draft is ${cur.status}` } };
+    return {
+      status: 409,
+      body: {
+        error: 'this draft changed since you read it — review it again before approving',
+        revision: cur.revision,
+      },
+    };
+  }
+
+  // Read the body *after* the claim. `edit` only touches pending rows, so from
+  // here the text is frozen and what we post is what was approved.
+  const claimed = await first(env, 'SELECT body FROM drafts WHERE id = ?', draftId);
+  const item = await first(env, 'SELECT * FROM items WHERE id = ?', draft.item_id);
+
   try {
-    const url = await postComment(env, item, draft.body);
+    const url = await postComment(env, item, claimed.body);
     await run(env,
-      "UPDATE drafts SET status='posted', decided_by=?, decided_at=?, posted_at=?, result_url=? WHERE id=?",
-      identity.actor, now, now, url, draftId);
-    await log(env, identity.actor, 'draft.posted', draft.item_id, { draft_id: draftId, url });
+      "UPDATE drafts SET status='posted', posted_at=?, result_url=? WHERE id=?",
+      now, url, draftId);
+    await log(env, identity.actor, 'draft.posted', draft.item_id,
+      { draft_id: draftId, revision: expected, url });
     await mark(env, draft.item_id, { outcome: 'responded', actor: identity.actor });
   } catch (e) {
-    await run(env, "UPDATE drafts SET status='failed', error=? WHERE id=?", String(e.message), draftId);
-    await log(env, identity.actor, 'draft.failed', draft.item_id,
+    // A refused request definitely posted nothing. A dropped connection or a
+    // 5xx might have posted and lost the response — resolving that by retrying
+    // is how you double-post. Park it as 'uncertain' and make a human look.
+    const status = e?.uncertain ? 'uncertain' : 'failed';
+    await run(env, 'UPDATE drafts SET status=?, error=? WHERE id=?',
+      status, String(e.message), draftId);
+    await log(env, identity.actor, `draft.${status}`, draft.item_id,
       { draft_id: draftId, error: String(e.message) });
-    return { status: 502, body: { error: String(e.message) } };
+    return {
+      status: 502,
+      body: {
+        error: e?.uncertain
+          ? `GitHub did not confirm this post: ${e.message}. Check the thread before retrying.`
+          : String(e.message),
+        outcome: status,
+      },
+    };
   }
   return { status: 200, body: await itemDetail(env, draft.item_id) };
 }
@@ -361,7 +452,8 @@ export async function handleApi(request, env, ctx, identity) {
     }
     if (method === 'POST' && action === 'snooze') {
       const b = await json();
-      return { status: 200, body: await snooze(env, id, b.days, identity.actor) };
+      const r = await snooze(env, id, b.days, identity.actor);
+      return r?.error ? { status: 400, body: r } : { status: 200, body: r };
     }
     if (method === 'POST' && action === 'draft-request') {
       const b = await json();

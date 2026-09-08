@@ -1,0 +1,10 @@
+# Local secrets for `wrangler dev`. Never committed — the deployed Worker gets
+# these through `wrangler secret put`.
+.dev.vars
+
+node_modules/
+.wrangler/
+
+# The node:sqlite prototype's database. Contains untrusted GitHub content and
+# triage history; the public repo carries code only.
+data/

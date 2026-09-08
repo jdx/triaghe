@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>gh-inbox</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <h1>gh-inbox</h1>
+  <nav id="tabs"></nav>
+  <input id="search" type="search" placeholder="filter by title or author" autocomplete="off" spellcheck="false">
+  <span id="meta" class="meta"></span>
+</header>
+
+<main>
+  <aside>
+    <div class="facet"><h2>Repos</h2><ul id="repos"></ul></div>
+    <div class="facet"><h2>Kind</h2><ul id="kinds"></ul></div>
+    <div class="facet keys">
+      <h2>Keys</h2>
+      <dl>
+        <dt>j / k</dt><dd>move</dd>
+        <dt>enter</dt><dd>open detail</dd>
+        <dt>o</dt><dd>open on github</dd>
+        <dt>r</dt><dd>responded</dd>
+        <dt>p</dt><dd>PR opened</dd>
+        <dt>x</dt><dd>ignore</dd>
+        <dt>s</dt><dd>snooze 7d</dd>
+        <dt>u</dt><dd>undo mark</dd>
+      </dl>
+    </div>
+  </aside>
+
+  <section id="list" aria-label="items"></section>
+  <section id="detail" aria-label="detail" hidden></section>
+</main>
+
+<script src="/app.js" type="module"></script>
+</body>
+</html>

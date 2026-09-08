@@ -1,0 +1,40 @@
+name = "gh-inbox"
+main = "src/index.mjs"
+compatibility_date = "2026-09-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Static board. run_worker_first so every response — asset or API — goes through
+# the Worker and picks up the same CSP and cache headers. At this traffic level
+# the extra invocation costs nothing and having one place that sets security
+# headers is worth more than saving it.
+assets = { directory = "./web", binding = "ASSETS", run_worker_first = true }
+
+[[d1_databases]]
+binding = "DB"
+database_name = "gh-inbox"
+database_id = "PLACEHOLDER_SET_BY_WRANGLER_D1_CREATE"
+migrations_dir = "migrations"
+
+[triggers]
+# Incremental poll. Each run also advances the backfill by one window, so a
+# cold database fills in over a few hours without any single run doing
+# unbounded work.
+crons = ["*/15 * * * *"]
+
+[vars]
+GH_INBOX_OWNER = "jdx"
+GH_INBOX_SCOPE = "user:jdx"
+# Cloudflare Access. TEAM_DOMAIN is <team>.cloudflareaccess.com; ACCESS_AUD is
+# the Application Audience tag of the Access app in front of this Worker.
+# Both are public identifiers, not secrets.
+ACCESS_TEAM_DOMAIN = "PLACEHOLDER.cloudflareaccess.com"
+ACCESS_AUD = "PLACEHOLDER_ACCESS_AUD_TAG"
+# Only this identity may approve a post to GitHub.
+OWNER_EMAIL = "claude@jdx.dev"
+
+# Secrets (set with `wrangler secret put`, never in this file):
+#   GITHUB_APP_ID
+#   GITHUB_APP_INSTALLATION_ID
+#   GITHUB_APP_PRIVATE_KEY
+[observability]
+enabled = true

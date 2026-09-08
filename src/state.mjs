@@ -37,10 +37,31 @@ export function computeState(item, triage) {
     return { state: 'needs_you', reason: `reopened: ${inbound.who} replied` };
   }
 
-  if (item.state === 'CLOSED' || item.state === 'MERGED') {
-    return { state: 'done', reason: `${item.state.toLowerCase()} on github` };
+  // Closed is not the same as finished. People keep talking on closed threads —
+  // "this broke again in 2.1", "how do I do the thing you mentioned" — and that
+  // is exactly the traffic GitHub notifications used to surface. Previously any
+  // CLOSED/MERGED/answered item returned `done` before activity was ever
+  // considered, so those comments landed in the database and were never shown.
+  const resolved = item.state === 'CLOSED' || item.state === 'MERGED' || item.is_answered;
+  if (resolved) {
+    const label = item.is_answered && item.state !== 'CLOSED' && item.state !== 'MERGED'
+      ? 'answered on github'
+      : `${String(item.state).toLowerCase()} on github`;
+
+    // Reopen only for activity that landed *after* GitHub resolved it, and that
+    // the owner has not already answered. Without `resolved_at` this cannot be
+    // asked, which is why it is now ingested.
+    const since = item.resolved_at ? Date.parse(item.resolved_at) : null;
+    const spoke = inbound.at ? Date.parse(inbound.at) : null;
+    const answered = item.last_owner_at ? Date.parse(item.last_owner_at) : 0;
+    if (since && spoke && spoke > since && spoke > answered) {
+      return {
+        state: 'needs_you',
+        reason: `${inbound.who} commented after it was ${label.split(' ')[0]}`,
+      };
+    }
+    return { state: 'done', reason: label };
   }
-  if (item.is_answered) return { state: 'done', reason: 'answered on github' };
 
   // Nothing has happened at all. Only reachable for an item with no author and
   // no comments, which GitHub should not produce, but the state machine should
@@ -68,6 +89,15 @@ export function computeState(item, triage) {
  */
 export function priority(item, state) {
   if (state !== 'needs_you') return 0;
+
+  // Someone typing your handle is asking for you specifically, rather than
+  // leaving a message the queue happens to contain. It outranks everything
+  // else in the inbox, and only loses to another mention.
+  if (item.last_mention_at
+    && (!item.last_owner_at
+      || Date.parse(item.last_mention_at) > Date.parse(item.last_owner_at))) {
+    return 1000 + Math.min((Date.now() - Date.parse(item.last_mention_at)) / 86400000, 60);
+  }
 
   // Two bands that cannot overlap: automation scores at most 10, a person
   // always scores at least 20. Without the floor, a question somebody asked

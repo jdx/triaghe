@@ -11,7 +11,7 @@
  */
 import { first, getMeta, log, setMeta } from './db.mjs';
 import { graphql } from './gh.mjs';
-import { isBot, isOwner, ownerLogin, searchScope } from './config.mjs';
+import { isBot, isOwner, mentionsOwner, ownerLogin, searchScope } from './config.mjs';
 
 const ITEM_BODY_MAX = 8000;
 const COMMENT_BODY_MAX = 2000;
@@ -36,14 +36,14 @@ query($q: String!, $type: SearchType!, $after: String) {
     nodes {
       __typename
       ... on Issue {
-        id number title url body state createdAt updatedAt locked
+        id number title url body state createdAt updatedAt locked closedAt
         author { login __typename } authorAssociation
         repository { nameWithOwner }
         labels(first: 20) { nodes { name } }
         comments(last: ${ACTIVITY_TAIL}) { totalCount nodes { ${COMMENT_FIELDS} } }
       }
       ... on PullRequest {
-        id number title url body state createdAt updatedAt locked isDraft
+        id number title url body state createdAt updatedAt locked isDraft closedAt
         author { login __typename } authorAssociation
         repository { nameWithOwner }
         labels(first: 20) { nodes { name } }
@@ -51,7 +51,7 @@ query($q: String!, $type: SearchType!, $after: String) {
         reviews(last: 20) { nodes { author { login __typename } createdAt } }
       }
       ... on Discussion {
-        id number title url body createdAt updatedAt locked isAnswered
+        id number title url body createdAt updatedAt locked isAnswered answerChosenAt
         author { login __typename } authorAssociation
         repository { nameWithOwner }
         category { name }
@@ -78,9 +78,9 @@ const day = (d) => new Date(d).toISOString().slice(0, 10);
  * stops early. Ascending covers a contiguous prefix [since, newest]; descending
  * covers a contiguous suffix [oldest, until].
  */
-async function searchWindow(env, type, since, until, maxPages, { asc = false } = {}) {
+async function searchWindow(env, type, since, until, maxPages, { asc = false, scope } = {}) {
   const sort = asc ? 'sort:updated-asc' : 'sort:updated-desc';
-  const q = `${searchScope(env)} updated:${day(since)}..${day(until)} ${sort}`;
+  const q = `${scope ?? searchScope(env)} updated:${day(since)}..${day(until)} ${sort}`;
   const out = [];
   let after = null;
   let complete = false;
@@ -167,8 +167,28 @@ function toRow(node, owner) {
     }
   }
 
+  // Being tagged is a direct request for attention, so it is tracked
+  // separately from ordinary inbound activity. The opening post counts: people
+  // open an issue and tag you in the first paragraph.
+  let lastMentionAt = null;
+  let lastMentionActor = null;
+  const noteMention = (who, at, text) => {
+    if (!at || isOwner(who, owner) || !mentionsOwner(text, owner)) return;
+    if (!lastMentionAt || Date.parse(at) > Date.parse(lastMentionAt)) {
+      lastMentionAt = at;
+      lastMentionActor = who ?? null;
+    }
+  };
+  noteMention(author, node.createdAt, node.body);
+  for (const c of store) noteMention(c.author?.login, c.createdAt, c.body);
+
+  // When GitHub considered this finished. Needed to answer "did someone turn up
+  // after it was closed?", which is exactly the case that used to vanish.
+  const resolvedAt = node.answerChosenAt ?? node.closedAt ?? null;
+
   return {
     tail: store,
+    mentions: { at: lastMentionAt, actor: lastMentionActor },
     id,
     values: [
       id, node.id ?? null, repo, kind, node.number, node.title, node.url,
@@ -182,6 +202,7 @@ function toRow(node, owner) {
       node.createdAt, node.updatedAt,
       lastActor, isBot(lastActor, lastActorType) ? 1 : 0, lastActorAt,
       lastOwnerAt, lastHumanAt, lastHumanActor,
+      resolvedAt, lastMentionAt, lastMentionActor,
     ],
   };
 }
@@ -193,8 +214,9 @@ INSERT INTO items (
   id, node_id, repo, kind, number, title, url, author, author_is_bot, author_assoc,
   body, body_truncated, state, is_answered, is_draft, locked, labels, category,
   comment_count, created_at, updated_at, last_actor, last_actor_is_bot,
-  last_actor_at, last_owner_at, last_human_at, last_human_actor, first_seen_at, fetched_at
-) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+  last_actor_at, last_owner_at, last_human_at, last_human_actor,
+  resolved_at, last_mention_at, last_mention_actor, first_seen_at, fetched_at
+) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(id) DO UPDATE SET
   node_id=excluded.node_id, title=excluded.title, body=excluded.body,
   body_truncated=excluded.body_truncated, state=excluded.state,
@@ -220,17 +242,30 @@ ON CONFLICT(id) DO UPDATE SET
     WHEN excluded.last_human_at IS NULL THEN items.last_human_actor
     WHEN items.last_human_at IS NULL OR excluded.last_human_at >= items.last_human_at
       THEN excluded.last_human_actor
-    ELSE items.last_human_actor END`;
+    ELSE items.last_human_actor END,
+  -- resolved_at tracks GitHub directly: reopening a thread clears it, and that
+  -- is the correct answer rather than something to preserve.
+  resolved_at=excluded.resolved_at,
+  last_mention_at=CASE
+    WHEN excluded.last_mention_at IS NULL THEN items.last_mention_at
+    WHEN items.last_mention_at IS NULL THEN excluded.last_mention_at
+    ELSE MAX(items.last_mention_at, excluded.last_mention_at) END,
+  last_mention_actor=CASE
+    WHEN excluded.last_mention_at IS NULL THEN items.last_mention_actor
+    WHEN items.last_mention_at IS NULL OR excluded.last_mention_at >= items.last_mention_at
+      THEN excluded.last_mention_actor
+    ELSE items.last_mention_actor END`;
 
 // Keyed on GitHub's node id, so re-seeing a comment updates it in place instead
 // of requiring the whole tail to be deleted and rebuilt. `first_seen_at` is
 // preserved on conflict: it records when this poller learned of the comment,
 // which is the only honest answer to "would I have missed this?".
 const UPSERT_COMMENT = `
-INSERT INTO comments (gh_id, item_id, author, author_is_bot, created_at, body, first_seen_at)
-VALUES (?,?,?,?,?,?,?)
+INSERT INTO comments (gh_id, item_id, author, author_is_bot, created_at, body, mentions_owner, first_seen_at)
+VALUES (?,?,?,?,?,?,?,?)
 ON CONFLICT(gh_id) DO UPDATE SET
-  body=excluded.body, author=excluded.author, author_is_bot=excluded.author_is_bot`;
+  body=excluded.body, author=excluded.author, author_is_bot=excluded.author_is_bot,
+  mentions_owner=excluded.mentions_owner`;
 
 async function persist(env, nodes) {
   const owner = ownerLogin(env);
@@ -249,7 +284,8 @@ async function persist(env, nodes) {
       stmts.push(upComment.bind(
         c.id, id, c.author?.login ?? null,
         isBot(c.author?.login, c.author?.__typename) ? 1 : 0,
-        c.createdAt ?? null, trunc(c.body, COMMENT_BODY_MAX), now,
+        c.createdAt ?? null, trunc(c.body, COMMENT_BODY_MAX),
+        !isOwner(c.author?.login, owner) && mentionsOwner(c.body, owner) ? 1 : 0, now,
       ));
     }
   }
@@ -278,7 +314,7 @@ export async function ingestOnce(env, { full = false } = {}) {
   const maxPages = full ? 20 : 6;
   const backfillDays = Number(env.BACKFILL_DAYS || 90);
   const report = {
-    incremental: 0, backfill: 0, backfill_to: null, done: false,
+    incremental: 0, backfill: 0, mentions: 0, backfill_to: null, done: false,
     incremental_truncated: false, backfill_truncated: false,
   };
 
@@ -308,6 +344,22 @@ export async function ingestOnce(env, { full = false } = {}) {
   }
   report.incremental_truncated = truncated;
   await setMeta(env, 'last_ingest_at', covered.toISOString());
+
+  // 1b. Mentions anywhere, not just on the owner's own repos.
+  //
+  //     `user:jdx` already covers everything in his repositories, so this window
+  //     exists purely for the other case: being tagged in somebody else's
+  //     project. That is a GitHub notification with no other replacement, and
+  //     it is the one class of miss that is completely invisible once
+  //     notifications are off. Kept deliberately small — it is a safety net,
+  //     not a second inbox.
+  const owner = ownerLogin(env);
+  for (const type of ['ISSUE', 'DISCUSSION']) {
+    const { nodes } = await searchWindow(env, type, since, now, 2, {
+      asc: true, scope: `mentions:${owner}`,
+    });
+    report.mentions += await persist(env, nodes);
+  }
 
   // 2. Backfill: one older window per run, walking backwards from first launch
   //    until we have `backfillDays` of history.

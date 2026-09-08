@@ -20,6 +20,9 @@ const state = {
   limit: 200,
   offset: 0,
   total: 0,
+  events: [],
+  feedHasMore: false,
+  feedHumansOnly: false,
   // Draft text the owner has typed but not yet approved, keyed by draft id.
   // The 60s auto-refresh rebuilds the detail pane from server state; without
   // this, it silently replaced whatever was half-written in the textarea.
@@ -28,11 +31,17 @@ const state = {
 
 const TABS = [
   ['needs_you', 'Inbox'],
+  ['mentions', 'Mentions'],
   ['awaiting_them', 'Waiting'],
   ['snoozed', 'Snoozed'],
   ['done', 'Done'],
   ['all', 'All'],
+  ['feed', 'Feed'],
 ];
+
+// Tabs that are views over activity rather than over the triage queue.
+const MENTIONS_TAB = 'mentions';
+const FEED_TAB = 'feed';
 
 const OUTCOME_LABEL = {
   responded: 'responded', pr_opened: 'PR opened', ignored: 'ignored',
@@ -84,11 +93,15 @@ async function api(path, options) {
 }
 
 async function refresh() {
+  if (state.tab === FEED_TAB) return refreshFeed();
   const params = new URLSearchParams({
-    state: state.tab,
+    // Mentions is a filter over every state, not a state of its own: a tag on
+    // a thread you are already waiting on still counts as being tagged.
+    state: state.tab === MENTIONS_TAB ? 'all' : state.tab,
     limit: String(state.limit),
     offset: String(state.offset),
   });
+  if (state.tab === MENTIONS_TAB) params.set('mentions', '1');
   if (state.repo) params.set('repo', state.repo);
   if (state.kind) params.set('kind', state.kind);
   if (state.q) params.set('q', state.q);
@@ -111,15 +124,43 @@ async function refresh() {
   render();
 }
 
+/**
+ * The feed is the audit view: raw activity, newest first, no triage filtering.
+ * It exists to answer "is the poller actually seeing things", so it shows bot
+ * traffic and closed threads that the inbox deliberately hides.
+ */
+async function refreshFeed() {
+  const params = new URLSearchParams({
+    limit: String(state.limit),
+    offset: String(state.offset),
+  });
+  if (state.repo) params.set('repo', state.repo);
+  if (state.kind) params.set('kind', state.kind);
+  if (state.feedHumansOnly) params.set('humans', '1');
+
+  const [page, stats] = await Promise.all([
+    api(`/api/feed?${params}`),
+    api('/api/stats'),
+  ]);
+  state.events = page.events;
+  state.feedHasMore = page.has_more;
+  state.stats = stats;
+  render();
+}
+
 /* ---------- render ---------- */
 
 function renderTabs() {
   const nav = $('#tabs');
   nav.replaceChildren();
   for (const [key, label] of TABS) {
-    const count = key === 'all' ? state.stats.total : (state.stats.by_state?.[key] ?? 0);
+    const count = key === FEED_TAB ? null
+      : key === MENTIONS_TAB ? (state.stats.mentions ?? 0)
+      : key === 'all' ? state.stats.total
+      : (state.stats.by_state?.[key] ?? 0);
     const b = el('button', key === state.tab ? 'tab active' : 'tab');
-    b.append(el('span', null, label), el('span', 'count', count ?? 0));
+    b.append(el('span', null, label));
+    if (count != null) b.append(el('span', 'count', count));
     b.onclick = () => { state.tab = key; state.cursor = 0; state.offset = 0; refresh(); };
     nav.append(b);
   }
@@ -148,7 +189,65 @@ function renderFacets() {
   }
 }
 
+function renderFeed() {
+  const list = $('#list');
+  list.replaceChildren();
+
+  const bar = el('div', 'feedbar');
+  const toggle = el('button', state.feedHumansOnly ? 'facet-btn active' : 'facet-btn',
+    state.feedHumansOnly ? 'people only' : 'everything');
+  toggle.onclick = () => {
+    state.feedHumansOnly = !state.feedHumansOnly;
+    state.offset = 0;
+    refresh();
+  };
+  bar.append(el('span', 'dim', 'showing'), toggle);
+  list.append(bar);
+
+  if (!state.events.length) {
+    list.append(el('p', 'empty', 'No activity recorded yet.'));
+    return;
+  }
+
+  for (const e of state.events) {
+    const row = el('article', 'row feedrow' + (e.mentions_owner ? ' mention' : ''));
+    row.onclick = () => openDetail(e.item_id);
+
+    const top = el('div', 'row-top');
+    top.append(el('span', 'age', relTime(e.at)));
+    top.append(el('span', `kind ${e.item_kind}`, e.item_kind === 'pr' ? 'PR' : e.item_kind));
+    top.append(el('span', 'repo', e.repo.replace(/^.*\//, '')));
+    top.append(el('span', 'num', `#${e.number}`));
+    top.append(el('span', 'title', e.title));
+    row.append(top);
+
+    const bot = el('div', 'row-bot');
+    bot.append(el('span', 'who', e.actor || 'unknown'));
+    bot.append(el('span', 'why', e.event === 'opened' ? 'opened this' : 'commented'));
+    if (e.mentions_owner) bot.append(el('span', 'badge mention', 'mentioned you'));
+    if (e.actor_is_bot) bot.append(el('span', 'badge label', 'bot'));
+    row.append(bot);
+
+    // One line of the comment, as plain text like everywhere else.
+    if (e.body) {
+      row.append(el('p', 'dim feedbody', e.body.replace(/\s+/g, ' ').slice(0, 220)));
+    }
+    list.append(row);
+  }
+
+  const pager = el('div', 'pager');
+  const prev = el('button', 'oc muted', '← newer');
+  prev.disabled = state.offset === 0;
+  prev.onclick = () => { state.offset = Math.max(0, state.offset - state.limit); refresh(); };
+  const next = el('button', 'oc muted', 'older →');
+  next.disabled = !state.feedHasMore;
+  next.onclick = () => { state.offset += state.limit; refresh(); };
+  pager.append(prev, el('span', 'dim', `from ${state.offset + 1}`), next);
+  list.append(pager);
+}
+
 function renderList() {
+  if (state.tab === FEED_TAB) return renderFeed();
   const list = $('#list');
   list.replaceChildren();
 
@@ -174,6 +273,10 @@ function renderList() {
     bot.append(el('span', 'who', it.last_human_actor || it.author || 'unknown'));
     bot.append(el('span', 'why', it.triage_reason));
     bot.append(el('span', 'age', relTime(it.last_human_at || it.updated_at)));
+    if (it.last_mention_at
+      && (!it.last_owner_at || Date.parse(it.last_mention_at) > Date.parse(it.last_owner_at))) {
+      bot.append(el('span', 'badge mention', `@ ${it.last_mention_actor || 'mentioned you'}`));
+    }
     if (it.pending_drafts) bot.append(el('span', 'badge draft', `${it.pending_drafts} draft`));
     if (it.open_requests) bot.append(el('span', 'badge queued', 'draft queued'));
     if (it.outcome) bot.append(el('span', 'badge done', OUTCOME_LABEL[it.outcome] ?? it.outcome));
@@ -462,6 +565,9 @@ async function openDetail(id) {
 document.addEventListener('keydown', (e) => {
   const typing = ['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName);
   if (typing && e.key !== 'Escape') return;
+  // The feed is a reading view over activity, not a cursor over `state.items`;
+  // j/k/r/x there would act on whatever the last triage list happened to hold.
+  if (state.tab === FEED_TAB && e.key !== 'Escape' && e.key !== '/') return;
   const cur = state.items[state.cursor];
 
   switch (e.key) {

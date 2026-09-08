@@ -37,7 +37,7 @@ Computed in `src/state.mjs` — pure, deterministic, no model.
 |---|---|
 | `needs_you` | something arrived from outside more recently than you replied |
 | `awaiting_them` | you spoke last |
-| `done` | closed, answered, or marked by you/jdx-bot |
+| `done` | closed, answered, or marked by you/jdx-bot — until someone comments after it was resolved |
 | `snoozed` | hidden until a date |
 
 The load-bearing detail is `last_human_at`: activity by a non-owner, non-bot
@@ -54,6 +54,37 @@ scores at most 10, a person always scores at least 20. That is ordering only.
 They stay fully visible and fully counted.
 
 A mark sticks until something new arrives after it.
+
+`done` is not permanent. People keep talking on closed threads — "this broke
+again in 2.1", "how do I do the thing you mentioned" — and that is precisely the
+traffic GitHub notifications used to surface. A closed, merged, or answered item
+returns to `needs_you` when someone comments **after** `resolved_at` and the
+owner has not replied since. Without that timestamp the question is unanswerable,
+which is why ingest records it.
+
+## Mentions
+
+Being tagged is someone asking for you specifically rather than leaving a message
+the queue happens to contain, so it is tracked apart from ordinary activity and
+sorts above everything else in the inbox.
+
+- `@you` is matched strictly: `ship@you.dev` is not a mention and `@yourhandle2`
+  is a different account (`mentionsOwner` in `src/config.mjs`).
+- A mention counts as outstanding only until you reply — answering it clears it.
+- Ingest runs a small extra `mentions:<owner>` search **without** the `user:`
+  scope. Your own repos are already covered by the main window; this exists for
+  the other case, being tagged in somebody else's project, which is the one class
+  of miss that is completely invisible once notifications are off.
+
+## Feed
+
+`/api/feed` and the **Feed** tab are the audit surface: every comment and every
+opened thread, newest first, filterable by repo and kind.
+
+It deliberately shows what triage hides — bot traffic, closed threads, things
+already marked. The inbox answers "what needs me"; the feed answers "what has
+actually been happening", which is how you check the poller is doing its job
+before trusting it instead of GitHub's own notifications.
 
 ## Security model
 
@@ -167,7 +198,8 @@ that branch is unreachable in production.
 ```
 GET  /api/whoami                         verified identity + whether it may approve
 GET  /api/stats
-GET  /api/items?state=&repo=&kind=&q=&limit=&offset=
+GET  /api/items?state=&repo=&kind=&q=&mentions=&limit=&offset=
+GET  /api/feed?repo=&kind=&mentions=&humans=&limit=&offset=   raw activity, newest first
 GET  /api/items/:id                      detail + comments + drafts + injection flags
 POST /api/items/:id/mark    {outcome, note}   outcome:null clears
 POST /api/items/:id/snooze  {days}

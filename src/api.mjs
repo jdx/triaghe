@@ -22,7 +22,7 @@ const LIST_COLUMNS = `
   i.author_assoc, i.state, i.is_answered, i.is_draft, i.locked, i.labels,
   i.category, i.comment_count, i.created_at, i.updated_at, i.last_actor,
   i.last_actor_is_bot, i.last_actor_at, i.last_owner_at, i.last_human_at,
-  i.last_human_actor`;
+  i.last_human_actor, i.resolved_at, i.last_mention_at, i.last_mention_actor`;
 
 const TRIAGE_COLUMNS = `
   t.outcome, t.note, t.marked_by, t.marked_at, t.marked_at_activity, t.snoozed_until`;
@@ -33,8 +33,8 @@ const TRIAGE_COLUMNS = `
  * the cheapest request in the app scan the same width as the most expensive one.
  */
 const STATE_COLUMNS = `
-  i.state, i.is_answered, i.last_actor, i.last_actor_at, i.last_owner_at,
-  i.last_human_at, i.last_human_actor,
+  i.state, i.is_answered, i.resolved_at, i.last_actor, i.last_actor_at,
+  i.last_owner_at, i.last_human_at, i.last_human_actor, i.last_mention_at,
   t.outcome, t.marked_at_activity, t.snoozed_until`;
 
 const PENDING_DRAFTS =
@@ -59,6 +59,9 @@ function decorate(row) {
     note: row.note ?? null,
     marked_by: row.marked_by ?? null,
     marked_at: row.marked_at ?? null,
+    last_mention_at: row.last_mention_at ?? null,
+    last_mention_actor: row.last_mention_actor ?? null,
+    resolved_at: row.resolved_at ?? null,
     snoozed_until: row.snoozed_until ?? null,
     priority: priority(row, s.state),
     pending_drafts: row.pending_drafts ?? 0,
@@ -87,6 +90,12 @@ async function listItems(env, params) {
   let out = rows.map(decorate);
   if (wanted && wanted !== 'all') out = out.filter((i) => i.triage_state === wanted);
 
+  // Outstanding mentions: tagged, and not since answered by the owner.
+  if (params.get('mentions') === '1') {
+    out = out.filter((i) => i.last_mention_at
+      && (!i.last_owner_at || Date.parse(i.last_mention_at) > Date.parse(i.last_owner_at)));
+  }
+
   out.sort((a, b) =>
     b.priority - a.priority
     || Date.parse(b.last_human_at || b.updated_at) - Date.parse(a.last_human_at || a.updated_at));
@@ -98,6 +107,58 @@ async function listItems(env, params) {
   const limit = clampInt(params.get('limit'), 200, 1, 500);
   const offset = clampInt(params.get('offset'), 0, 0, Number.MAX_SAFE_INTEGER);
   return { total: out.length, limit, offset, items: out.slice(offset, offset + limit) };
+}
+
+/**
+ * Everything that happened, newest first.
+ *
+ * This is the audit surface rather than the work surface. The board answers
+ * "what needs me"; the feed answers "what has actually been going on", which is
+ * how you check the poller is doing its job. It deliberately shows bot activity
+ * and resolved threads — the things triage filters out are exactly the things
+ * you want visible when you are verifying coverage.
+ */
+async function feed(env, params) {
+  const where = [];
+  const binds = [];
+  if (params.get('repo')) { where.push('repo = ?'); binds.push(params.get('repo')); }
+  if (params.get('kind')) { where.push('item_kind = ?'); binds.push(params.get('kind')); }
+  if (params.get('mentions') === '1') where.push('mentions_owner = 1');
+  if (params.get('humans') === '1') where.push('actor_is_bot = 0');
+
+  const limit = clampInt(params.get('limit'), 100, 1, 500);
+  const offset = clampInt(params.get('offset'), 0, 0, Number.MAX_SAFE_INTEGER);
+
+  // Opening a thread is an event too, so the feed unions comments with the
+  // items themselves. Both sides carry the same shape.
+  const sql = `
+    SELECT * FROM (
+      SELECT c.created_at AS at, 'comment' AS event, c.author AS actor,
+             c.author_is_bot AS actor_is_bot, c.body AS body,
+             c.mentions_owner AS mentions_owner, c.gh_id AS gh_id,
+             i.id AS item_id, i.repo AS repo, i.kind AS item_kind,
+             i.number AS number, i.title AS title, i.url AS url
+      FROM comments c JOIN items i ON i.id = c.item_id
+      UNION ALL
+      SELECT i.created_at AS at, 'opened' AS event, i.author AS actor,
+             i.author_is_bot AS actor_is_bot, NULL AS body,
+             0 AS mentions_owner, i.id AS gh_id,
+             i.id AS item_id, i.repo AS repo, i.kind AS item_kind,
+             i.number AS number, i.title AS title, i.url AS url
+      FROM items i
+    )
+    ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+    ORDER BY at DESC LIMIT ? OFFSET ?`;
+
+  const rows = await all(env, sql, ...binds, limit + 1, offset);
+  return {
+    limit,
+    offset,
+    // No COUNT(*) over the union on every page — the feed is scrolled, not
+    // counted, so it reports only whether another page exists.
+    has_more: rows.length > limit,
+    events: rows.slice(0, limit),
+  };
 }
 
 /** Integer query params: fall back to `dflt` unless the value is a real number. */
@@ -270,15 +331,23 @@ async function stats(env) {
   ]);
 
   const counts = {};
+  let mentions = 0;
   for (const r of byState) {
     const s = computeState(r, r).state;
     counts[s] = (counts[s] || 0) + 1;
+    // Mentions worth surfacing are the ones still waiting on the owner; a tag
+    // you have already replied to is not outstanding.
+    if (s === 'needs_you' && r.last_mention_at
+      && (!r.last_owner_at || Date.parse(r.last_mention_at) > Date.parse(r.last_owner_at))) {
+      mentions++;
+    }
   }
 
   return {
     total: byState.length,
     by_state: counts,
     inbox: counts.needs_you ?? 0,
+    mentions,
     by_repo: Object.fromEntries(byRepo.map((r) => [r.repo, r.c])),
     repos: byRepo.map((r) => r.repo).sort(),
     pending_drafts: pending?.c ?? 0,
@@ -399,6 +468,9 @@ export async function handleApi(request, env, ctx, identity) {
   if (method === 'GET' && p === '/api/stats') return { status: 200, body: await stats(env) };
   if (method === 'GET' && p === '/api/items') {
     return { status: 200, body: await listItems(env, url.searchParams) };
+  }
+  if (method === 'GET' && p === '/api/feed') {
+    return { status: 200, body: await feed(env, url.searchParams) };
   }
   if (method === 'GET' && p === '/api/events') {
     return { status: 200, body: await all(env, 'SELECT * FROM events ORDER BY id DESC LIMIT 200') };

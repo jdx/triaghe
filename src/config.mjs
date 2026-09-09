@@ -53,7 +53,25 @@ export function isBot(login, authorType) {
   if (authorType === 'Bot' || authorType === 'Mannequin') return true;
   if (!login) return false;
   const l = login.toLowerCase();
-  return l.endsWith('[bot]') || l.endsWith('-bot') || BOT_LOGINS.has(l);
+  // `[bot]` only, not `-bot`.
+  //
+  // GitHub disallows brackets in a username, so the `[bot]` suffix cannot be
+  // worn by a person — it is structurally an App. `-bot` is only a naming
+  // convention, and anyone may adopt it.
+  //
+  // That distinction did not matter much while a bot still counted as inbound
+  // activity: misfiling a person cost them a slightly wrong label. It matters
+  // now. Being classified as automation means a comment cannot undo a mark or
+  // reopen a resolved thread, and an open PR lands in Chores — so a guess based
+  // on someone's choice of username decides whether they can reach the owner at
+  // all, which is not a guess worth making.
+  //
+  // Nothing is lost: every `-bot` account this board actually sees
+  // (`renovate-bot`, `snyk-bot`) is already named in the list above, and of 75
+  // distinct actors across the most recent 500 events, none relied on the
+  // suffix. An account that does turn up gets added by name, which is a review
+  // rather than a heuristic.
+  return l.endsWith('[bot]') || BOT_LOGINS.has(l);
 }
 
 export function isOwner(login, owner) {

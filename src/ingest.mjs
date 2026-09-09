@@ -11,7 +11,7 @@
  */
 import { all, first, getMeta, log, setMeta } from './db.mjs';
 import { graphql } from './gh.mjs';
-import { isBot, isOwner, mentionsOwner, ownerLogin, searchScope } from './config.mjs';
+import { isBot, isHumanMention, isOwner, ownerLogin, searchScope } from './config.mjs';
 
 const ITEM_BODY_MAX = 8000;
 const COMMENT_BODY_MAX = 2000;
@@ -347,16 +347,16 @@ function toRow(node, owner) {
   // open an issue and tag you in the first paragraph.
   let lastMentionAt = null;
   let lastMentionActor = null;
-  const noteMention = (who, at, text) => {
-    if (!at || isOwner(who, owner) || !mentionsOwner(text, owner)) return;
+  const noteMention = (who, type, at, text) => {
+    if (!at || !isHumanMention(who, type, text, owner)) return;
     if (!lastMentionAt || Date.parse(at) > Date.parse(lastMentionAt)) {
       lastMentionAt = at;
       lastMentionActor = who ?? null;
     }
   };
-  const bodyMentions = !isOwner(author, owner) && mentionsOwner(node.body, owner);
-  noteMention(author, node.createdAt, node.body);
-  for (const c of store) noteMention(c.author?.login, c.createdAt, c.body);
+  const bodyMentions = isHumanMention(author, node.author?.__typename, node.body, owner);
+  noteMention(author, node.author?.__typename, node.createdAt, node.body);
+  for (const c of store) noteMention(c.author?.login, c.author?.__typename, c.createdAt, c.body);
 
   // When GitHub considered this finished. Needed to answer "did someone turn up
   // after it was closed?", which is exactly the case that used to vanish.
@@ -482,7 +482,7 @@ const bindComment = (stmt, c, itemId, owner, now) => stmt.bind(
   c.id, itemId, c.author?.login ?? null,
   isBot(c.author?.login, c.author?.__typename) ? 1 : 0,
   c.createdAt ?? null, trunc(c.body, COMMENT_BODY_MAX),
-  !isOwner(c.author?.login, owner) && mentionsOwner(c.body, owner) ? 1 : 0,
+  isHumanMention(c.author?.login, c.author?.__typename, c.body, owner) ? 1 : 0,
   c.parentId ?? null, now,
 );
 

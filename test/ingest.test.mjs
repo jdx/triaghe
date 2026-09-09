@@ -360,3 +360,50 @@ test('discussion replies count toward the thread total', async () => {
   const reply = env.raw.prepare("SELECT parent_gh_id FROM comments WHERE gh_id='R_1'").get();
   assert.equal(reply.parent_gh_id, 'C_1', 'a reply has to be distinguishable from a comment');
 });
+
+test('a bot tagging the owner is not a mention', async () => {
+  const env = makeEnv(APP);
+
+  // The exact shape found in production: all three outstanding mentions were
+  // release PRs opened by `mise-en-dev`, whose generated changelog says `@jdx`.
+  // A release bot is not asking for your attention.
+  const bot = (id, at, body) => ({
+    id, createdAt: at, body, author: { login: 'mise-en-dev', __typename: 'User' },
+  });
+  const human = (id, at, body) => ({
+    id, createdAt: at, body, author: { login: 'fredleger', __typename: 'User' },
+  });
+
+  searchDouble(() => ({
+    issueCount: 1,
+    hasNextPage: false,
+    nodes: [{
+      ...node(1, '2026-06-01T12:00:00Z'),
+      author: { login: 'mise-en-dev', __typename: 'User' },
+      body: 'chore: release v1.35.2 — thanks @jdx',
+      comments: {
+        totalCount: 2,
+        nodes: [
+          human('C_1', '2026-06-01T09:00:00Z', 'hey @jdx can you look at this'),
+          bot('C_2', '2026-06-01T11:00:00Z', 'released by @jdx'),
+        ],
+      },
+    }],
+  }));
+
+  await ingestOnce(env, {});
+
+  const item = env.raw.prepare('SELECT last_mention_at, last_mention_actor, body_mentions_owner FROM items').get();
+  assert.equal(item.last_mention_actor, 'fredleger',
+    'the newest bot mention must not displace a real persons request');
+  assert.equal(item.last_mention_at, '2026-06-01T09:00:00Z');
+  assert.equal(item.body_mentions_owner, 0,
+    'a generated changelog naming the owner is not an opening post addressed to them');
+
+  // Mapped rather than compared directly: node:sqlite returns null-prototype
+  // rows, which deepStrictEqual rejects even when every value matches.
+  const flags = env.raw.prepare('SELECT gh_id, mentions_owner FROM comments ORDER BY gh_id')
+    .all().map((r) => [r.gh_id, r.mentions_owner]);
+  assert.deepEqual(flags, [['C_1', 1], ['C_2', 0]],
+    'the mentions feed must agree with the mention band');
+});

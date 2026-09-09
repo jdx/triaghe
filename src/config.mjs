@@ -64,3 +64,22 @@ export function mentionsOwner(text, owner) {
   const safe = String(owner).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return new RegExp(`(^|[^A-Za-z0-9._/-])@${safe}(?![A-Za-z0-9-])`, 'i').test(text);
 }
+
+/**
+ * Did a *person* tag the owner?
+ *
+ * Bots tag the owner constantly and mean nothing by it: release automation puts
+ * `@owner` in generated changelogs, AI reviewers address their summaries to the
+ * author. Counting those defeats the whole point of the mention band, which is
+ * "somebody is waiting on you specifically" — in production all three
+ * outstanding mentions were release PRs from `mise-en-dev`.
+ *
+ * Every mention signal routes through here so the badge, the list, and the feed
+ * cannot disagree about what counts.
+ */
+export function isHumanMention(login, authorType, text, owner) {
+  return !!login
+    && !isOwner(login, owner)
+    && !isBot(login, authorType)
+    && mentionsOwner(text, owner);
+}

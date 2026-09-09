@@ -1,0 +1,22 @@
+{
+  "name": "triaghe",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Triage board for inbound work on GitHub projects: discussions, issues and PRs from other people, with your own activity and bot noise filtered out.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "migrate:local": "wrangler d1 migrations apply triaghe --local",
+    "migrate:remote": "wrangler d1 migrations apply triaghe --remote",
+    "tail": "wrangler tail",
+    "test": "node --test \"test/**/*.test.mjs\""
+  },
+  "devDependencies": {
+    "wrangler": "^4.42.0"
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true,
+    "workerd@1.20260908.1": true
+  }
+}

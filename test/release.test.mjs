@@ -146,3 +146,43 @@ test('bot chatter on a release PR does not pull it into the inbox', () => {
   });
   assert.equal(computeState(noisy, null).state, 'release');
 });
+
+test('the owner cutting their own release is still a release', () => {
+  // Live: three of the four release PRs sitting in the inbox were opened by the
+  // owner, not by a release bot. Running the owner rule first put every one of
+  // them back where the lane exists to stop them going.
+  const mine = openPr({ author: 'jdx', author_is_bot: 0, labels: '["release"]' });
+  assert.equal(computeState(mine, null, 'jdx').state, 'release');
+
+  // And without a label, which is the case a label-only rule misses. jdx/mise-
+  // action, hk and mr-boxington-action carried `release`; mr-boxington#415,
+  // titled just "chore: release", carried none.
+  const unlabelled = openPr({
+    author: 'jdx', author_is_bot: 0, labels: '[]', title: 'chore: release',
+  });
+  assert.equal(computeState(unlabelled, null, 'jdx').state, 'release');
+});
+
+test('a contributor writing about a release is not filed away', () => {
+  // The gate admits a release bot and the owner, and nobody else. Neither of
+  // those is waiting on a review; a contributor is.
+  const theirs = openPr({
+    author: 'alice', author_is_bot: 0, labels: '[]', title: 'release: cut 2.0 by hand',
+    last_human_at: '2026-06-01T00:00:00Z', last_human_actor: 'alice',
+  });
+  assert.equal(computeState(theirs, null, 'jdx').state, 'needs_you');
+});
+
+test('a person waiting still outranks the owner\'s own release', () => {
+  const asked = openPr({
+    author: 'jdx',
+    author_is_bot: 0,
+    labels: '["release"]',
+    last_owner_at: '2026-06-01T00:00:00Z',
+    last_human_at: '2026-06-02T00:00:00Z',
+    last_human_actor: 'alice',
+  });
+  const s = computeState(asked, null, 'jdx');
+  assert.equal(s.state, 'needs_you');
+  assert.match(s.reason, /alice/);
+});

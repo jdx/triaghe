@@ -9,7 +9,7 @@ import { postComment } from './post.mjs';
 import { ingestOnce, ingestStatus } from './ingest.mjs';
 import { ownerLogin } from './config.mjs';
 
-const OUTCOMES = new Set(['ignored', 'responded', 'pr_opened', 'closed', 'waiting']);
+const OUTCOMES = new Set(['responded', 'pr_opened', 'closed', 'waiting']);
 
 /**
  * The list view never selects `body`. With a few thousand items the bodies are
@@ -92,7 +92,7 @@ async function listItems(env, params) {
 
   // Outstanding mentions: tagged, not since answered, and still actionable.
   //
-  // The triage_state test is the load-bearing half. Without it, ignoring or
+  // The triage_state test is the load-bearing half. Without it, marking responded or
   // snoozing a mention left it sitting in the Mentions list while the badge —
   // which counts only actionable items — went down, so the tab claimed one
   // thing and the count another. Dismissal has to work here like everywhere.

@@ -351,7 +351,6 @@ function outcomeBar(item) {
   add('responded', () => markItem(item.id, 'responded'));
   add('PR opened', () => markItem(item.id, 'pr_opened'));
   add('closed', () => markItem(item.id, 'closed'));
-  add('ignore', () => markItem(item.id, 'ignored'), 'muted');
   add('snooze 7d', () => snoozeItem(item.id, 7), 'muted');
   if (item.outcome) add('undo', () => markItem(item.id, null), 'muted');
 
@@ -609,7 +608,7 @@ document.addEventListener('keydown', (e) => {
   const typing = ['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName);
   if (typing && e.key !== 'Escape') return;
   // The feed is a reading view over activity, not a cursor over `state.items`;
-  // j/k/r/x there would act on whatever the last triage list happened to hold.
+  // j/k/r there would act on whatever the last triage list happened to hold.
   if (state.tab === FEED_TAB && e.key !== 'Escape' && e.key !== '/') return;
   const cur = state.items[state.cursor];
 
@@ -621,7 +620,6 @@ document.addEventListener('keydown', (e) => {
     case 'o': if (cur) window.open(cur.url, '_blank', 'noopener'); break;
     case 'r': if (cur) markItem(cur.id, 'responded'); break;
     case 'p': if (cur) markItem(cur.id, 'pr_opened'); break;
-    case 'x': if (cur) markItem(cur.id, 'ignored'); break;
     case 's': if (cur) snoozeItem(cur.id, 7); break;
     case 'u': if (cur) markItem(cur.id, null); break;
     case '/': e.preventDefault(); $('#search').focus(); break;

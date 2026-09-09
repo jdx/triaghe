@@ -32,6 +32,16 @@ export const BOT_LOGINS = new Set([
   'greptile-apps', 'gemini-code-assist', 'mise-en-dev', 'sourcery-ai',
   'ellipsis-dev', 'sweep-ai', 'restyled-io', 'snyk-bot', 'trunk-io',
   'github-advanced-security', 'semgrep-app', 'whitesource-bolt-for-github',
+  // This board's own agent. It opens PRs here and answers review threads on
+  // them, and every one of those replies was arriving as somebody waiting on
+  // the owner — including a `@owner` in a reply, which reached the mention band,
+  // the one signal the board promotes above everything else.
+  //
+  // A machine account is a plain user to GraphQL, so nothing else catches it.
+  // Being the loudest automation on the owner's own repositories, it is the one
+  // omission from this list that compounds: the agent answers a review, that
+  // creates inbox work, the owner looks, there is nothing there for them.
+  'jdxbot',
 ]);
 
 /**

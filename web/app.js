@@ -23,6 +23,12 @@ const state = {
   events: [],
   feedHasMore: false,
   feedHumansOnly: false,
+  // The feed pages by cursor rather than offset, because ingestion writes to it
+  // while it is being read and an offset would slide underneath. `feedTrail` is
+  // how "newer" works without one: the cursor of each page already visited.
+  feedCursor: null,
+  feedNextCursor: null,
+  feedTrail: [],
   // Draft text the owner has typed but not yet approved, keyed by draft id.
   // The 60s auto-refresh rebuilds the detail pane from server state; without
   // this, it silently replaced whatever was half-written in the textarea.
@@ -130,10 +136,8 @@ async function refresh() {
  * traffic and closed threads that the inbox deliberately hides.
  */
 async function refreshFeed() {
-  const params = new URLSearchParams({
-    limit: String(state.limit),
-    offset: String(state.offset),
-  });
+  const params = new URLSearchParams({ limit: String(state.limit) });
+  if (state.feedCursor) params.set('cursor', state.feedCursor);
   if (state.repo) params.set('repo', state.repo);
   if (state.kind) params.set('kind', state.kind);
   if (state.feedHumansOnly) params.set('humans', '1');
@@ -144,8 +148,17 @@ async function refreshFeed() {
   ]);
   state.events = page.events;
   state.feedHasMore = page.has_more;
+  state.feedNextCursor = page.next_cursor ?? null;
   state.stats = stats;
   render();
+}
+
+/** Any change to what is being listed starts both pagers over. */
+function resetPaging() {
+  state.offset = 0;
+  state.feedCursor = null;
+  state.feedNextCursor = null;
+  state.feedTrail = [];
 }
 
 /* ---------- render ---------- */
@@ -161,7 +174,7 @@ function renderTabs() {
     const b = el('button', key === state.tab ? 'tab active' : 'tab');
     b.append(el('span', null, label));
     if (count != null) b.append(el('span', 'count', count));
-    b.onclick = () => { state.tab = key; state.cursor = 0; state.offset = 0; refresh(); };
+    b.onclick = () => { state.tab = key; state.cursor = 0; resetPaging(); refresh(); };
     nav.append(b);
   }
 }
@@ -176,16 +189,16 @@ function renderFacets() {
     li.append(b);
     return li;
   };
-  repos.append(mk('all repos', !state.repo, () => { state.repo = null; state.offset = 0; refresh(); }));
+  repos.append(mk('all repos', !state.repo, () => { state.repo = null; resetPaging(); refresh(); }));
   for (const r of state.stats.repos ?? []) {
-    repos.append(mk(r.replace(/^.*\//, ''), state.repo === r, () => { state.repo = r; state.offset = 0; refresh(); }));
+    repos.append(mk(r.replace(/^.*\//, ''), state.repo === r, () => { state.repo = r; resetPaging(); refresh(); }));
   }
 
   const kinds = $('#kinds');
   kinds.replaceChildren();
-  kinds.append(mk('all', !state.kind, () => { state.kind = null; state.offset = 0; refresh(); }));
+  kinds.append(mk('all', !state.kind, () => { state.kind = null; resetPaging(); refresh(); }));
   for (const k of ['discussion', 'issue', 'pr']) {
-    kinds.append(mk(k, state.kind === k, () => { state.kind = k; state.offset = 0; refresh(); }));
+    kinds.append(mk(k, state.kind === k, () => { state.kind = k; resetPaging(); refresh(); }));
   }
 }
 
@@ -198,7 +211,7 @@ function renderFeed() {
     state.feedHumansOnly ? 'people only' : 'everything');
   toggle.onclick = () => {
     state.feedHumansOnly = !state.feedHumansOnly;
-    state.offset = 0;
+    resetPaging();
     refresh();
   };
   bar.append(el('span', 'dim', 'showing'), toggle);
@@ -237,12 +250,16 @@ function renderFeed() {
 
   const pager = el('div', 'pager');
   const prev = el('button', 'oc muted', '← newer');
-  prev.disabled = state.offset === 0;
-  prev.onclick = () => { state.offset = Math.max(0, state.offset - state.limit); refresh(); };
+  prev.disabled = !state.feedTrail.length;
+  prev.onclick = () => { state.feedCursor = state.feedTrail.pop() ?? null; refresh(); };
   const next = el('button', 'oc muted', 'older →');
-  next.disabled = !state.feedHasMore;
-  next.onclick = () => { state.offset += state.limit; refresh(); };
-  pager.append(prev, el('span', 'dim', `from ${state.offset + 1}`), next);
+  next.disabled = !state.feedHasMore || !state.feedNextCursor;
+  next.onclick = () => {
+    state.feedTrail.push(state.feedCursor);
+    state.feedCursor = state.feedNextCursor;
+    refresh();
+  };
+  pager.append(prev, el('span', 'dim', `page ${state.feedTrail.length + 1}`), next);
   list.append(pager);
 }
 
@@ -530,9 +547,21 @@ function render() {
   // A measured shortfall outranks the truncation flags: those say a loop
   // stopped early, this says GitHub had rows we do not hold.
   if (s.coverage?.shortfall > 0) {
-    meta.append(el('span', 'warn small',
-      ` · last sync found ${s.coverage.expected} items and stored ${s.coverage.fetched}`
-      + ` — ${s.coverage.shortfall} not collected`));
+    // Two different gaps, and conflating them into one subtraction made the
+    // banner's own arithmetic wrong: threads the search returned and we did not
+    // store, and comments inside threads we did store.
+    const parts = [];
+    const threads = Math.max((s.coverage.expected ?? 0) - (s.coverage.fetched ?? 0), 0);
+    if (threads) parts.push(`${threads} items`);
+    if (s.coverage.comments_missing) {
+      parts.push(`${s.coverage.comments_missing} comments across `
+        + `${s.coverage.threads_incomplete} threads`);
+    }
+    meta.append(el('span', 'warn small', ` · not collected: ${parts.join(', ')}`));
+    if (s.coverage.abandoned?.length) {
+      meta.append(el('span', 'warn small',
+        ` · gave up paging ${s.coverage.abandoned.join(', ')}`));
+    }
   } else if (s.last_truncated) {
     meta.append(el('span', 'warn small',
       ' · last sync hit its page limit — some updates are not in yet'));
@@ -604,7 +633,7 @@ let searchTimer;
 $('#search').addEventListener('input', (e) => {
   clearTimeout(searchTimer);
   const v = e.target.value;
-  searchTimer = setTimeout(() => { state.q = v; state.cursor = 0; state.offset = 0; refresh(); }, 200);
+  searchTimer = setTimeout(() => { state.q = v; state.cursor = 0; resetPaging(); refresh(); }, 200);
 });
 
 setInterval(refresh, 60_000);

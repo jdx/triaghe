@@ -104,12 +104,38 @@ So every search window also reads GitHub's own `issueCount` for that window, and
 each run records what GitHub said existed against what it came away with:
 
 ```json
-"coverage": { "expected": 812, "fetched": 812, "shortfall": 0 }
+"coverage": {
+  "expected": 812, "fetched": 812,
+  "comments_missing": 0, "threads_incomplete": 0,
+  "abandoned": [], "shortfall": 0
+}
 ```
 
-That number does not come from our paging, which is what makes it worth
+Those numbers do not come from our paging, which is what makes them worth
 anything. A non-zero `shortfall` is shown on the board, and it catches a failure
 mode nobody anticipated rather than only the ones that were.
+
+`issueCount` counts threads, so it is only half the question. A thread can be
+collected whole as far as the search is concerned while its comment connection
+— bounded, because the sweep reads many threads — quietly omitted the tail, and
+any mention inside it. So each thread also carries GitHub's own comment and
+reply totals against what is stored, and `shortfall` is both gaps. Threads with
+a gap are paged to the end, a few per run, by a drain pass that runs after the
+sweep.
+
+### Windows resume; they are not stepped over
+
+A window that runs out of pages keeps its bounds and its cursor, and the next
+run continues from there. The checkpoint does not advance until the window is
+actually finished. Advancing it by a second to guarantee forward motion — which
+is what this used to do — permanently skips any result sharing the boundary
+timestamp that the page budget did not reach.
+
+GitHub search stops at 1000 results, so some windows cannot be paged to the end
+by anybody. After `MAX_WINDOW_PAGES` the window is abandoned so it cannot block
+every later poll behind it; it is named in `coverage.abandoned` and its
+remainder stays counted in `shortfall`. Giving up is a thing the board says out
+loud, not a thing it does quietly.
 
 ## Security model
 
@@ -223,9 +249,11 @@ without running them would have proved nothing.
 
 Coverage is deliberately narrow: the races and coverage gaps that fail
 *silently*. Stale-revision approval, two concurrent approvals posting once,
-an edit reporting its own revision, an exhausted search window still advancing
-its checkpoint, and ambiguous GitHub write outcomes. They run on pull requests
-and need no secrets.
+an edit reporting its own revision, a truncated search window resuming instead
+of skipping tied results, comments beyond the tail being counted and then
+fetched, closed-thread reactivation ordering, feed pages that must not repeat
+rows while ingestion writes underneath them, and ambiguous GitHub write
+outcomes. They run on pull requests and need no secrets.
 
 ## Local development
 
@@ -246,7 +274,8 @@ that branch is unreachable in production.
 GET  /api/whoami                         verified identity + whether it may approve
 GET  /api/stats
 GET  /api/items?state=&repo=&kind=&q=&mentions=&limit=&offset=
-GET  /api/feed?repo=&kind=&mentions=&humans=&limit=&offset=   raw activity, newest first
+GET  /api/feed?repo=&kind=&mentions=&humans=&limit=&cursor=   raw activity, newest first
+                                         cursor: `next_cursor` from the previous page
 GET  /api/items/:id                      detail + comments + drafts + injection flags
 POST /api/items/:id/mark    {outcome, note}   outcome:null clears
 POST /api/items/:id/snooze  {days}

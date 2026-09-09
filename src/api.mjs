@@ -131,7 +131,23 @@ async function feed(env, params) {
   if (params.get('humans') === '1') where.push('actor_is_bot = 0');
 
   const limit = clampInt(params.get('limit'), 100, 1, 500);
-  const offset = clampInt(params.get('offset'), 0, 0, Number.MAX_SAFE_INTEGER);
+
+  // Keyset, not offset.
+  //
+  // The feed reads a table scheduled ingestion writes to. With numeric offsets,
+  // any event inserted between two page requests shifts every later offset by
+  // one, so "older" hands back a row the previous page already showed. An audit
+  // surface that repeats and drops rows while you page through it cannot be
+  // used to check the poller, which is the only reason it exists.
+  //
+  // `(at, gh_id)` is unique and totally ordered, so a cursor names a position
+  // in the data rather than a count of rows before it. Inserts land above the
+  // cursor and leave the page you asked for exactly where it was.
+  const cursor = parseCursor(params.get('cursor'));
+  if (cursor) {
+    where.push('(at < ? OR (at = ? AND gh_id < ?))');
+    binds.push(cursor.at, cursor.at, cursor.id);
+  }
 
   // Opening a thread is an event too, so the feed unions comments with the
   // items themselves. Both sides carry the same shape.
@@ -155,17 +171,28 @@ async function feed(env, params) {
       FROM items i
     )
     ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-    ORDER BY at DESC LIMIT ? OFFSET ?`;
+    ORDER BY at DESC, gh_id DESC LIMIT ?`;
 
-  const rows = await all(env, sql, ...binds, limit + 1, offset);
+  const rows = await all(env, sql, ...binds, limit + 1);
+  const events = rows.slice(0, limit);
+  const last = events[events.length - 1];
   return {
     limit,
-    offset,
     // No COUNT(*) over the union on every page — the feed is scrolled, not
     // counted, so it reports only whether another page exists.
     has_more: rows.length > limit,
-    events: rows.slice(0, limit),
+    next_cursor: rows.length > limit && last ? `${last.at}|${last.gh_id}` : null,
+    events,
   };
+}
+
+/** `at|gh_id`, as handed back by the previous page. Anything else is page one. */
+function parseCursor(raw) {
+  const cut = raw ? raw.indexOf('|') : -1;
+  if (cut < 1) return null;
+  const at = raw.slice(0, cut);
+  const id = raw.slice(cut + 1);
+  return id ? { at, id } : null;
 }
 
 /**

@@ -5,7 +5,12 @@
  * textContent or a text node. There is no innerHTML anywhere in this file, so
  * untrusted issue and discussion bodies cannot introduce markup, script, or a
  * remote image beacon. The CSP is the backstop, not the primary defence.
+ *
+ * Bodies and comments are markdown, rendered by `markdown.js`, which holds to
+ * the same rule: it produces a data tree and builds elements from it, never an
+ * HTML string.
  */
+import { renderMarkdown } from './markdown.js';
 
 const $ = (sel) => document.querySelector(sel);
 const state = {
@@ -327,17 +332,17 @@ function renderList() {
 }
 
 /**
- * Renders untrusted markdown-ish text as plain text, preserving fenced code
- * blocks visually. Deliberately not a markdown renderer: no links, no images,
- * no HTML passthrough.
+ * Renders untrusted markdown.
+ *
+ * The `.untrusted` frame stays around the result. It used to be a `<pre>` and
+ * was doing two jobs — showing the text and marking it as somebody else's words
+ * — and only the first of those is replaced by rendering markdown. `repo`
+ * qualifies bare `#123` references to the thread they were written in.
  */
-function renderUntrusted(container, text) {
+function renderUntrusted(container, text, repo) {
   container.replaceChildren();
   if (!text) { container.append(el('p', 'dim', '(no body)')); return; }
-  for (const chunk of String(text).split(/```/)) {
-    if (chunk === '') continue;
-    container.append(el('pre', 'untrusted', chunk.replace(/^\n+|\n+$/g, '')));
-  }
+  container.append(renderMarkdown(el('div', 'untrusted'), text, { repo }));
 }
 
 function outcomeBar(item) {
@@ -405,7 +410,7 @@ function renderDetail() {
   }
 
   const bodyBox = el('div', 'body');
-  renderUntrusted(bodyBox, item.body);
+  renderUntrusted(bodyBox, item.body, item.repo);
   if (item.body_truncated) bodyBox.append(el('p', 'dim', '(truncated — open on GitHub for the rest)'));
   pane.append(bodyBox);
 
@@ -419,7 +424,7 @@ function renderDetail() {
       if (c.author_is_bot) ch.append(el('span', 'badge label', 'bot'));
       box.append(ch);
       const cb = el('div', 'cbody');
-      renderUntrusted(cb, c.body);
+      renderUntrusted(cb, c.body, item.repo);
       box.append(cb);
       pane.append(box);
     }

@@ -46,6 +46,7 @@ const TABS = [
   ['awaiting_them', 'Waiting'],
   ['release', 'Releases'],
   ['chore', 'Chores'],
+  ['draft', 'Drafts'],
   ['snoozed', 'Snoozed'],
   ['done', 'Done'],
   ['all', 'All'],
@@ -58,7 +59,7 @@ const FEED_TAB = 'feed';
 
 const OUTCOME_LABEL = {
   responded: 'responded', pr_opened: 'PR opened', ignored: 'ignored',
-  closed: 'closed', waiting: 'waiting',
+  closed: 'closed', waiting: 'waiting', dismissed: 'off the board',
 };
 
 /* ---------- tiny DOM helpers (text-only by construction) ---------- */
@@ -358,6 +359,9 @@ function outcomeBar(item) {
   add('responded', () => markItem(item.id, 'responded'));
   add('PR opened', () => markItem(item.id, 'pr_opened'));
   add('closed', () => markItem(item.id, 'closed'));
+  // Neutral: takes it off the board without claiming a reason. Comes back the
+  // moment a person turns up, same as every other outcome.
+  add('off the board', () => markItem(item.id, 'dismissed'), 'muted');
   add('snooze 7d', () => snoozeItem(item.id, 7), 'muted');
   if (item.outcome) add('undo', () => markItem(item.id, null), 'muted');
 
@@ -627,6 +631,7 @@ document.addEventListener('keydown', (e) => {
     case 'o': if (cur) window.open(cur.url, '_blank', 'noopener'); break;
     case 'r': if (cur) markItem(cur.id, 'responded'); break;
     case 'p': if (cur) markItem(cur.id, 'pr_opened'); break;
+    case 'd': if (cur) markItem(cur.id, 'dismissed'); break;
     case 's': if (cur) snoozeItem(cur.id, 7); break;
     case 'u': if (cur) markItem(cur.id, null); break;
     case '/': e.preventDefault(); $('#search').focus(); break;

@@ -39,7 +39,19 @@ Computed in `src/state.mjs` — pure, deterministic, no model.
 | `needs_you` | something arrived from outside more recently than you replied |
 | `awaiting_them` | you spoke last |
 | `done` | closed, answered, or marked by you/jdx-bot — until someone comments after it was resolved |
+| `release` | a release cut, waiting to be merged |
+| `chore` | opened by automation — dependency bumps and the like |
+| `draft` | somebody else's draft: the author has said it is not ready |
 | `snoozed` | hidden until a date |
+
+`done` also covers `dismissed` — the neutral outcome behind the "off the board"
+button. It asserts nothing about why, and like every other outcome it lasts
+until a *person* turns up, which is what separates it from an ignore.
+
+`release`, `chore` and `draft` all yield when somebody is actually waiting, so
+none of them can hide a request. `draft` yields only to an outstanding mention
+rather than to any comment: being tagged is a request, a comment on a draft is
+work in progress out loud.
 
 The load-bearing detail is `last_human_at`: activity by a non-owner, non-bot
 account. It is *preferred* over the last actor of any kind, because otherwise a
@@ -342,7 +354,7 @@ three months and dying against the CPU limit.
 ## Keyboard
 
 `j`/`k` move · `enter` detail · `o` open on GitHub · `r` responded · `p` PR opened
-· `s` snooze 7d · `u` undo · `/` search
+· `d` off the board · `s` snooze 7d · `u` undo · `/` search
 
 ## What happened to the node prototype
 

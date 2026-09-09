@@ -133,6 +133,31 @@ export function computeState(item, triage, owner) {
     };
   }
 
+  // Somebody else's draft is not ready to be looked at.
+  //
+  // A draft is the author saying so themselves, which makes it the most
+  // reliable signal on the board — better than any heuristic here, because it
+  // is a statement of intent rather than an inference from activity. It also
+  // costs nothing to honour: `is_draft` is refreshed on every poll, so marking
+  // a PR ready brings it back and converting it to a draft again removes it,
+  // with no state of our own to keep in step.
+  //
+  // The owner's own drafts are excluded above, deliberately — an unfinished PR
+  // of your own is the clearest case of something you have to finish.
+  //
+  // The mention exception is narrow on purpose. "Never show me drafts" and
+  // "someone is trying to reach me" can both be true at once, and both the
+  // Mentions filter and the badge require `needs_you`, so an unconditional
+  // lane would make tagging the owner from a draft the one reliable way to be
+  // invisible. An ordinary comment on a draft still does not qualify: being
+  // tagged is a request, a comment is just work in progress.
+  const mentionOutstanding = item.last_mention_at
+    && Date.parse(item.last_mention_at) > lastOwner;
+
+  if (item.is_draft && !isOwner(item.author, owner) && !mentionOutstanding) {
+    return { state: 'draft', reason: `draft by ${item.author} — not ready yet` };
+  }
+
   if (isReleasePr(item) && !personWaiting) {
     return { state: 'release', reason: `release cut by ${item.author} — merge to ship` };
   }
@@ -148,7 +173,13 @@ export function computeState(item, triage, owner) {
   // Yields to a person on the same terms Releases does. "This bump breaks the
   // macOS build" belongs in the inbox no matter who opened the PR.
   if (item.author_is_bot && !personWaiting) {
-    return { state: 'chore', reason: `opened by ${item.author} — merge or close` };
+    // The instruction has to match the kind. Renovate opens a Dependency
+    // Dashboard *issue* as well as pull requests, and telling somebody to merge
+    // an issue is the kind of small wrongness that makes a board feel
+    // approximate — which is expensive here, because the whole proposition is
+    // that what it says can be believed.
+    const what = item.kind === 'pr' ? 'merge or close' : 'close when handled';
+    return { state: 'chore', reason: `opened by ${item.author} — ${what}` };
   }
 
   // Nothing has happened at all. Only reachable for an item with no author and

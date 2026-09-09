@@ -203,3 +203,14 @@ test('someone else\'s PR is not the owner\'s to finish', () => {
   });
   assert.equal(computeState(theirs, null, 'jdx').state, 'awaiting_them');
 });
+
+test('a chore is told to do something its kind can actually do', () => {
+  // Renovate opens a Dependency Dashboard issue as well as pull requests, and
+  // an issue cannot be merged. Small wrongness like this is expensive here:
+  // the whole proposition is that what the board says can be believed.
+  assert.match(computeState(renovate(), null).reason, /merge or close/);
+  assert.match(computeState(renovate({ kind: 'issue' }), null).reason, /close when handled/);
+  assert.doesNotMatch(computeState(renovate({ kind: 'issue' }), null).reason, /merge/);
+  assert.equal(computeState(renovate({ kind: 'discussion' }), null).state, 'chore',
+    'a bot-opened discussion is still a chore, just not a mergeable one');
+});

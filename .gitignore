@@ -5,6 +5,7 @@
 node_modules/
 .wrangler/
 
-# The node:sqlite prototype's database. Contains untrusted GitHub content and
-# triage history; the public repo carries code only.
+# The retired node:sqlite prototype's database, if an old checkout leaves one
+# behind. Contains untrusted GitHub content and triage history; the public repo
+# carries code only.
 data/

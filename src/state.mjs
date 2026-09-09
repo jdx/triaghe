@@ -113,26 +113,6 @@ export function computeState(item, triage, owner) {
   // have been the one way to make a direct request invisible.
   const personWaiting = personWaitingSince(item, inbound, lastOwner);
 
-  // An open pull request the owner wrote is theirs to finish.
-  //
-  // This is the one inbox entry that is not somebody waiting, and it is here
-  // because it is the owner's own unfinished work — the queue they are trying
-  // to clear, not a request they are trying to answer. It has to be stated
-  // rather than fall out of the activity rules, because after this change
-  // nothing else would put it here: only CI and review bots speak on most of
-  // them, and the whole point above is that a bot speaking means nothing.
-  //
-  // Deliberately PRs and not issues. An issue the owner opened on their own
-  // repository is usually a note to themselves; an open PR is work in flight.
-  // It also sits after the resolved branch, so merging or closing one settles
-  // it, which is what makes the lane drain instead of accumulating.
-  if (isOwner(item.author, owner) && item.kind === 'pr' && !personWaiting) {
-    return {
-      state: 'needs_you',
-      reason: item.is_draft ? 'your draft — still open' : 'your PR — still open',
-    };
-  }
-
   // Somebody else's draft is not ready to be looked at.
   //
   // A draft is the author saying so themselves, which makes it the most
@@ -158,9 +138,53 @@ export function computeState(item, triage, owner) {
     return { state: 'draft', reason: `draft by ${item.author} — not ready yet` };
   }
 
-  if (isReleasePr(item) && !personWaiting) {
+  // Releases leave the board unless a person turns up on one.
+  //
+  // Checked before anything about who opened them, because most cuts on these
+  // repositories are made by hand rather than by a release bot, and the owner
+  // rule would otherwise claim every one of them. What makes something a
+  // release is what it is, not whose name is on it.
+  //
+  // A release cut is a chore right up to the moment somebody comments on it —
+  // "this bump breaks the macOS build", "hold this until #400 lands" — and that
+  // is the whole of what `personWaiting` means: a non-owner, non-bot comment
+  // more recent than the owner's own last word. So CI output, Socket reports
+  // and review-bot summaries leave it in the lane, a person does not, and once
+  // the owner has answered them it settles back.
+  //
+  // There is no Releases tab. That is deliberate: with this exception in place
+  // the lane holds only things nobody is waiting on, so a tab would be a badge
+  // counting work that never needs attention. `?state=release` still lists them.
+  //
+  // A draft is never a release cut, whatever it is called. The lane says "merge
+  // to ship" and a draft cannot be merged, so an owner's half-finished release
+  // would have been filed as done-and-waiting instead of staying in their own
+  // list — and this branch runs before both draft rules, so nothing downstream
+  // would have caught it.
+  if (isReleasePr(item, owner) && !item.is_draft && !personWaiting) {
     return { state: 'release', reason: `release cut by ${item.author} — merge to ship` };
   }
+
+  // An open pull request the owner wrote is theirs to finish.
+  //
+  // This is the one inbox entry that is not somebody waiting, and it is here
+  // because it is the owner's own unfinished work — the queue they are trying
+  // to clear, not a request they are trying to answer. It has to be stated
+  // rather than fall out of the activity rules, because after this change
+  // nothing else would put it here: only CI and review bots speak on most of
+  // them, and the whole point above is that a bot speaking means nothing.
+  //
+  // Deliberately PRs and not issues. An issue the owner opened on their own
+  // repository is usually a note to themselves; an open PR is work in flight.
+  // It also sits after the resolved branch, so merging or closing one settles
+  // it, which is what makes the lane drain instead of accumulating.
+  if (isOwner(item.author, owner) && item.kind === 'pr' && !personWaiting) {
+    return {
+      state: 'needs_you',
+      reason: item.is_draft ? 'your draft — still open' : 'your PR — still open',
+    };
+  }
+
 
   // Everything else automation opened, in a lane beside Releases.
   //

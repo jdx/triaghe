@@ -40,11 +40,13 @@ const state = {
   draftEdits: new Map(),
 };
 
+// No Releases tab: the owner asked not to see release PRs at all, not merely
+// to have them out of the inbox. The state still exists and `?state=release`
+// still lists them, so nothing is lost — it is off the navigation, not deleted.
 const TABS = [
   ['needs_you', 'Inbox'],
   ['mentions', 'Mentions'],
   ['awaiting_them', 'Waiting'],
-  ['release', 'Releases'],
   ['chore', 'Chores'],
   ['draft', 'Drafts'],
   ['snoozed', 'Snoozed'],
@@ -645,6 +647,21 @@ $('#search').addEventListener('input', (e) => {
   const v = e.target.value;
   searchTimer = setTimeout(() => { state.q = v; state.cursor = 0; resetPaging(); refresh(); }, 200);
 });
+
+/**
+ * `?state=` picks the opening view, including the lanes that have no tab.
+ *
+ * Without this the documented way to inspect release PRs silently showed the
+ * inbox instead, which is worse than not documenting it: the reader concludes
+ * the lane is empty rather than that the URL did nothing.
+ *
+ * Validated against the states the server can actually return, so a typo or a
+ * crafted link opens the inbox rather than a permanently empty list.
+ */
+const OPENABLE = new Set([...TABS.map(([key]) => key),
+  'release', 'chore', 'draft', 'awaiting_them', 'snoozed', 'done', 'all']);
+const wanted = new URLSearchParams(location.search).get('state');
+if (wanted && OPENABLE.has(wanted)) state.tab = wanted;
 
 setInterval(refresh, 60_000);
 refresh().catch((e) => { $('#meta').textContent = `error: ${e.message}`; });

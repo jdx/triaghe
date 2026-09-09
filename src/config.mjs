@@ -133,16 +133,20 @@ const RELEASE_TITLE = /^(?:(?:chore|ci|build)(?:\([^)]*\))?:\s*)?release\b/i;
  * carried none at all, despite all three being the same bot cutting the same
  * kind of release.
  *
- * The title fallback is therefore gated on bot authorship. A person writing
- * "release: ..." is doing something a human decided to do and belongs in the
- * inbox; a release bot is executing a schedule.
+ * The title fallback is gated on who wrote it, and the gate admits two people:
+ * a release bot, and the owner. It exists to stop a contributor writing
+ * "release: cut 2.0 by hand" from being filed away, because that person is
+ * waiting on a review. Neither of the two admitted is waiting on anyone — the
+ * owner cutting their own release is running the same scheduled chore a bot
+ * would, just by hand, which on these repositories is how most of them happen.
  */
-export function isReleasePr(item) {
+export function isReleasePr(item, owner) {
   if (item?.kind !== 'pr') return false;
 
   const raw = item.labels;
   const labels = Array.isArray(raw) ? raw : JSON.parse(raw || '[]');
   if (labels.some((l) => RELEASE_LABELS.has(String(l).toLowerCase()))) return true;
 
-  return !!item.author_is_bot && RELEASE_TITLE.test(item.title || '');
+  const routine = !!item.author_is_bot || isOwner(item.author, owner);
+  return routine && RELEASE_TITLE.test(item.title || '');
 }

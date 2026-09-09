@@ -103,11 +103,9 @@ test('a snooze still wins over the release lane', () => {
   assert.equal(s.state, 'snoozed');
 });
 
-test('a person commenting on a release PR puts it back in the inbox', () => {
-  // A release cut is a chore right up until somebody turns up on it. Both the
-  // Mentions filter and the badge require `needs_you`, so an unconditional
-  // release lane would have made tagging the owner on a release PR the one
-  // reliable way to render a direct request invisible.
+test('a person commenting on a release PR is the one thing that surfaces it', () => {
+  // The single exception, and the reason the lane is otherwise absolute: a
+  // release cut is a chore right up to the moment somebody turns up on it.
   const asked = openPr({
     labels: '["release"]',
     last_actor: 'alice',
@@ -119,8 +117,8 @@ test('a person commenting on a release PR puts it back in the inbox', () => {
     last_mention_actor: 'alice',
   });
   const s = computeState(asked, null);
-  assert.equal(s.state, 'needs_you', 'a person waiting outranks the release lane');
-  assert.match(s.reason, /alice/, 'and the reason names them, not the release');
+  assert.equal(s.state, 'needs_you');
+  assert.match(s.reason, /alice/, 'and it reads as her comment, not as a release');
 });
 
 test('a release PR the owner already answered goes back to being a chore', () => {
@@ -145,4 +143,93 @@ test('bot chatter on a release PR does not pull it into the inbox', () => {
     last_actor_is_bot: 1,
   });
   assert.equal(computeState(noisy, null).state, 'release');
+});
+
+test('the owner cutting their own release is still a release', () => {
+  // Live: three of the four release PRs sitting in the inbox were opened by the
+  // owner, not by a release bot. Running the owner rule first put every one of
+  // them back where the lane exists to stop them going.
+  const mine = openPr({ author: 'jdx', author_is_bot: 0, labels: '["release"]' });
+  assert.equal(computeState(mine, null, 'jdx').state, 'release');
+
+  // And without a label, which is the case a label-only rule misses. jdx/mise-
+  // action, hk and mr-boxington-action carried `release`; mr-boxington#415,
+  // titled just "chore: release", carried none.
+  const unlabelled = openPr({
+    author: 'jdx', author_is_bot: 0, labels: '[]', title: 'chore: release',
+  });
+  assert.equal(computeState(unlabelled, null, 'jdx').state, 'release');
+});
+
+test('a contributor writing about a release is not filed away', () => {
+  // The gate admits a release bot and the owner, and nobody else. Neither of
+  // those is waiting on a review; a contributor is.
+  const theirs = openPr({
+    author: 'alice', author_is_bot: 0, labels: '[]', title: 'release: cut 2.0 by hand',
+    last_human_at: '2026-06-01T00:00:00Z', last_human_actor: 'alice',
+  });
+  assert.equal(computeState(theirs, null, 'jdx').state, 'needs_you');
+});
+
+test('the same exception applies to a release the owner cut themselves', () => {
+  const asked = openPr({
+    author: 'jdx',
+    author_is_bot: 0,
+    labels: '["release"]',
+    last_owner_at: '2026-06-01T00:00:00Z',
+    last_human_at: '2026-06-02T00:00:00Z',
+    last_human_actor: 'alice',
+  });
+  const s = computeState(asked, null, 'jdx');
+  assert.equal(s.state, 'needs_you');
+  assert.match(s.reason, /alice/);
+});
+
+test('only a person counts: CI and review bots leave a release alone', () => {
+  // Socket, Greptile and CodeRabbit comment on release PRs constantly. If any
+  // of them qualified, the exception would swallow the rule.
+  for (const bot of ['socket-security', 'greptile-apps', 'github-actions', 'coderabbitai']) {
+    const noisy = openPr({
+      labels: '["release"]',
+      last_actor: bot,
+      last_actor_at: '2026-06-05T00:00:00Z',
+      last_actor_is_bot: 1,
+    });
+    assert.equal(computeState(noisy, null).state, 'release', `${bot} must not surface it`);
+  }
+});
+
+test('once the owner has answered, a release settles back into the lane', () => {
+  const answered = openPr({
+    labels: '["release"]',
+    last_human_at: '2026-06-02T00:00:00Z',
+    last_human_actor: 'alice',
+    last_owner_at: '2026-06-03T00:00:00Z',
+  });
+  assert.equal(computeState(answered, null).state, 'release');
+});
+
+test('a draft release is not a release cut, it is an unfinished one', () => {
+  // The lane says "merge to ship" and a draft cannot be merged. This branch runs
+  // before both draft rules, so nothing downstream would have caught it — an
+  // owner's half-written release would have been filed as done-and-waiting
+  // instead of staying in their own list.
+  const mine = openPr({
+    author: 'jdx', author_is_bot: 0, labels: '["release"]', is_draft: 1,
+  });
+  const s = computeState(mine, null, 'jdx');
+  assert.equal(s.state, 'needs_you');
+  assert.match(s.reason, /your draft/);
+
+  // Somebody else's draft release belongs in the draft lane for the same
+  // reason, not in a lane that claims it is ready.
+  const theirs = openPr({
+    author: 'mise-en-dev', author_is_bot: 1, labels: '["release"]', is_draft: 1,
+  });
+  assert.equal(computeState(theirs, null, 'jdx').state, 'draft');
+});
+
+test('a ready release is still a release', () => {
+  const ready = openPr({ author: 'jdx', author_is_bot: 0, labels: '["release"]', is_draft: 0 });
+  assert.equal(computeState(ready, null, 'jdx').state, 'release');
 });

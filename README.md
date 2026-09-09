@@ -39,7 +39,7 @@ Computed in `src/state.mjs` — pure, deterministic, no model.
 | `needs_you` | something arrived from outside more recently than you replied |
 | `awaiting_them` | you spoke last |
 | `done` | closed, answered, or marked by you/jdx-bot — until someone comments after it was resolved |
-| `release` | a release cut, waiting to be merged |
+| `release` | a release cut nobody is waiting on — no tab, reachable at `?state=release` |
 | `chore` | opened by automation — dependency bumps and the like |
 | `draft` | somebody else's draft: the author has said it is not ready |
 | `snoozed` | hidden until a date |
@@ -49,7 +49,11 @@ button. It asserts nothing about why, and like every other outcome it lasts
 until a *person* turns up, which is what separates it from an ignore.
 
 `release`, `chore` and `draft` all yield when somebody is actually waiting, so
-none of them can hide a request. `draft` yields only to an outstanding mention
+none of them can hide a request. For `release` that exception is the only way
+back onto the board: it has no tab, because with the exception in place the lane
+holds only work nobody is waiting on, and a badge counting that is a badge worth
+ignoring. A person commenting on a release cut puts it in the inbox reading as
+their comment; CI output and review bots leave it where it is. `draft` yields only to an outstanding mention
 rather than to any comment: being tagged is a request, a comment on a draft is
 work in progress out loud.
 
@@ -59,12 +63,14 @@ CodeRabbit or Greptile review comment would mask the contributor who is actually
 waiting on you. Bots are detected by GraphQL `__typename == 'Bot'` plus a list
 for automation running under plain user accounts (`src/config.mjs`).
 
-Purely automated items — renovate, dependabot, release PRs — **are** inbox work.
-They are open PRs on your repos and somebody has to merge them. They do not
-accrue urgency with age the way a person's unanswered question does, so
-`priority()` puts them in a band that cannot overlap the human one: automation
-scores at most 10, a person always scores at least 20. That is ordering only.
-They stay fully visible and fully counted.
+Purely automated items — renovate, dependabot, release cuts — are **not** inbox
+work. They are open PRs somebody has to merge, but nobody is waiting on a reply,
+and left in the inbox they are most of the volume: a hand-cleared inbox went from
+6 items to 12 in ninety minutes, nine of them put there by a bot. Dependency PRs
+go to `chore`, release cuts to `release`. Within the inbox, `priority()` still
+keeps bands that cannot overlap — automation scores at most 10, a person always
+at least 20 — so a question asked this morning never sorts below a Dependency
+Dashboard.
 
 A mark sticks until something new arrives after it.
 

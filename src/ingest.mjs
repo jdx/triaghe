@@ -190,6 +190,7 @@ function toRow(node, owner) {
       lastMentionActor = who ?? null;
     }
   };
+  const bodyMentions = !isOwner(author, owner) && mentionsOwner(node.body, owner);
   noteMention(author, node.createdAt, node.body);
   for (const c of store) noteMention(c.author?.login, c.createdAt, c.body);
 
@@ -213,7 +214,7 @@ function toRow(node, owner) {
       node.createdAt, node.updatedAt,
       lastActor, isBot(lastActor, lastActorType) ? 1 : 0, lastActorAt,
       lastOwnerAt, lastHumanAt, lastHumanActor,
-      resolvedAt, lastMentionAt, lastMentionActor,
+      resolvedAt, lastMentionAt, lastMentionActor, bodyMentions ? 1 : 0,
     ],
   };
 }
@@ -226,8 +227,9 @@ INSERT INTO items (
   body, body_truncated, state, is_answered, is_draft, locked, labels, category,
   comment_count, created_at, updated_at, last_actor, last_actor_is_bot,
   last_actor_at, last_owner_at, last_human_at, last_human_actor,
-  resolved_at, last_mention_at, last_mention_actor, first_seen_at, fetched_at
-) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+  resolved_at, last_mention_at, last_mention_actor, body_mentions_owner,
+  first_seen_at, fetched_at
+) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(id) DO UPDATE SET
   node_id=excluded.node_id, title=excluded.title, body=excluded.body,
   body_truncated=excluded.body_truncated, state=excluded.state,
@@ -256,7 +258,7 @@ ON CONFLICT(id) DO UPDATE SET
     ELSE items.last_human_actor END,
   -- resolved_at tracks GitHub directly: reopening a thread clears it, and that
   -- is the correct answer rather than something to preserve.
-  resolved_at=excluded.resolved_at,
+  resolved_at=excluded.resolved_at, body_mentions_owner=excluded.body_mentions_owner,
   last_mention_at=CASE
     WHEN excluded.last_mention_at IS NULL THEN items.last_mention_at
     WHEN items.last_mention_at IS NULL THEN excluded.last_mention_at
@@ -326,7 +328,7 @@ export async function ingestOnce(env, { full = false } = {}) {
   const backfillDays = Number(env.BACKFILL_DAYS || 90);
   const report = {
     incremental: 0, backfill: 0, mentions: 0, backfill_to: null, done: false,
-    incremental_truncated: false, backfill_truncated: false,
+    incremental_truncated: false, backfill_truncated: false, mentions_truncated: false,
   };
 
   // 1. Incremental: everything updated since the last successful run, with an
@@ -369,13 +371,30 @@ export async function ingestOnce(env, { full = false } = {}) {
   //     it is the one class of miss that is completely invisible once
   //     notifications are off. Kept deliberately small — it is a safety net,
   //     not a second inbox.
+  //     It keeps its own checkpoint. Riding `last_ingest_at` meant the shared
+  //     checkpoint had already jumped forward on the strength of the
+  //     owner-repository search, so anything this window did not reach was
+  //     skipped rather than retried — and a failure here after that write had
+  //     the same effect. Its truncation is reported separately too, because
+  //     "mentions may be incomplete" is a different statement from "the main
+  //     sweep may be incomplete".
   const owner = ownerLogin(env);
+  const mentionSince = new Date(await getMeta(env, 'mentions_ingest_at', since.toISOString()));
+  let mentionCovered = now;
   for (const type of ['ISSUE', 'DISCUSSION']) {
-    const { nodes } = await searchWindow(env, type, since, now, 2, {
+    const { nodes, complete, newest } = await searchWindow(env, type, mentionSince, now, 2, {
       asc: true, scope: `mentions:${owner}`,
     });
     report.mentions += await persist(env, nodes);
+    if (complete) continue;
+    report.mentions_truncated = true;
+    const edge = newest ? new Date(newest) : mentionSince;
+    if (edge < mentionCovered) mentionCovered = edge;
   }
+  if (report.mentions_truncated && mentionCovered <= mentionSince) {
+    mentionCovered = new Date(mentionSince.getTime() + 1000);
+  }
+  await setMeta(env, 'mentions_ingest_at', mentionCovered.toISOString());
 
   // 2. Backfill: one older window per run, walking backwards from first launch
   //    until we have `backfillDays` of history.
@@ -411,16 +430,19 @@ export async function ingestOnce(env, { full = false } = {}) {
   // so the last run's shortfall is persisted for the UI rather than only logged.
   await setMeta(env, 'last_truncated',
     report.incremental_truncated || report.backfill_truncated ? now.toISOString() : '');
+  await setMeta(env, 'mentions_truncated_at', report.mentions_truncated ? now.toISOString() : '');
   await log(env, 'ingest', 'poll', null, report);
   return report;
 }
 
 /** Small helpers the API surfaces so the board can show ingest health. */
 export async function ingestStatus(env) {
-  const [lastIngest, cursor, truncated, count] = await Promise.all([
+  const [lastIngest, cursor, truncated, mentionsTruncated, mentionsAt, count] = await Promise.all([
     getMeta(env, 'last_ingest_at'),
     getMeta(env, 'backfill_cursor'),
     getMeta(env, 'last_truncated'),
+    getMeta(env, 'mentions_truncated_at'),
+    getMeta(env, 'mentions_ingest_at'),
     first(env, 'SELECT COUNT(*) AS c FROM items'),
   ]);
   const backfillDays = Number(env.BACKFILL_DAYS || 90);
@@ -436,6 +458,10 @@ export async function ingestStatus(env) {
     backfill_days: backfillDays,
     horizon: new Date(Date.now() - backfillDays * 86400000).toISOString(),
     last_truncated: truncated || null,
+    // Reported apart from the main sweep: the cross-repository mention search
+    // is the stream with no other safety net once notifications are off.
+    mentions_ingest: mentionsAt || null,
+    mentions_truncated: mentionsTruncated || null,
     items: count?.c ?? 0,
   };
 }

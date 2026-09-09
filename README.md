@@ -75,6 +75,12 @@ sorts above everything else in the inbox.
   scope. Your own repos are already covered by the main window; this exists for
   the other case, being tagged in somebody else's project, which is the one class
   of miss that is completely invisible once notifications are off.
+- That search keeps its **own** checkpoint (`mentions_ingest_at`) and reports its
+  own truncation. Sharing `last_ingest_at` meant the checkpoint advanced on the
+  strength of the main sweep, so anything the mention window did not reach was
+  skipped rather than retried.
+- Dismissal works here like everywhere: marking or snoozing a mention removes it
+  from the list, not only from the badge.
 
 ## Feed
 

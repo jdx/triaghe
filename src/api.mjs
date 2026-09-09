@@ -90,10 +90,14 @@ async function listItems(env, params) {
   let out = rows.map(decorate);
   if (wanted && wanted !== 'all') out = out.filter((i) => i.triage_state === wanted);
 
-  // Outstanding mentions: tagged, and not since answered by the owner.
+  // Outstanding mentions: tagged, not since answered, and still actionable.
+  //
+  // The triage_state test is the load-bearing half. Without it, ignoring or
+  // snoozing a mention left it sitting in the Mentions list while the badge —
+  // which counts only actionable items — went down, so the tab claimed one
+  // thing and the count another. Dismissal has to work here like everywhere.
   if (params.get('mentions') === '1') {
-    out = out.filter((i) => i.last_mention_at
-      && (!i.last_owner_at || Date.parse(i.last_mention_at) > Date.parse(i.last_owner_at)));
+    out = out.filter((i) => isOutstandingMention(i) && i.triage_state === 'needs_you');
   }
 
   out.sort((a, b) =>
@@ -142,7 +146,10 @@ async function feed(env, params) {
       UNION ALL
       SELECT i.created_at AS at, 'opened' AS event, i.author AS actor,
              i.author_is_bot AS actor_is_bot, NULL AS body,
-             0 AS mentions_owner, i.id AS gh_id,
+             -- The opening post's own flag, not the item's aggregate: that
+             -- aggregate may refer to a later comment, which would put the
+             -- wrong event in a mentions-filtered feed.
+             i.body_mentions_owner AS mentions_owner, i.id AS gh_id,
              i.id AS item_id, i.repo AS repo, i.kind AS item_kind,
              i.number AS number, i.title AS title, i.url AS url
       FROM items i
@@ -159,6 +166,15 @@ async function feed(env, params) {
     has_more: rows.length > limit,
     events: rows.slice(0, limit),
   };
+}
+
+/**
+ * A mention still waiting on the owner. Shared so the list filter and the badge
+ * cannot drift apart; they disagreeing is what made dismissal look broken.
+ */
+function isOutstandingMention(row) {
+  return !!row.last_mention_at
+    && (!row.last_owner_at || Date.parse(row.last_mention_at) > Date.parse(row.last_owner_at));
 }
 
 /** Integer query params: fall back to `dflt` unless the value is a real number. */
@@ -337,10 +353,7 @@ async function stats(env) {
     counts[s] = (counts[s] || 0) + 1;
     // Mentions worth surfacing are the ones still waiting on the owner; a tag
     // you have already replied to is not outstanding.
-    if (s === 'needs_you' && r.last_mention_at
-      && (!r.last_owner_at || Date.parse(r.last_mention_at) > Date.parse(r.last_owner_at))) {
-      mentions++;
-    }
+    if (s === 'needs_you' && isOutstandingMention(r)) mentions++;
   }
 
   return {

@@ -530,6 +530,11 @@ function render() {
   if (s.last_truncated) {
     meta.append(el('span', 'warn small',
       ' · last sync hit its page limit — some updates are not in yet'));
+  } else if (s.mentions_truncated) {
+    // Called out separately: this is the cross-repository mention stream, the
+    // one with no other safety net once GitHub notifications are off.
+    meta.append(el('span', 'warn small',
+      ' · mention search hit its page limit — some @mentions may be missing'));
   } else if (s.last_ingest && !s.backfill_complete && s.backfill_cursor) {
     meta.append(el('span', 'dim',
       ` · history back to ${s.backfill_cursor.slice(0, 10)}, still filling in`));

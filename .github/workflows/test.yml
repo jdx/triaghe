@@ -1,0 +1,24 @@
+name: test
+
+# Runs on pull requests, unlike deploy.yml. These tests need no secrets — they
+# drive the real handlers against in-memory SQLite with a stubbed fetch — so
+# they are safe to run for fork PRs, which is how every change arrives here.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm test

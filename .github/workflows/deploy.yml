@@ -19,6 +19,12 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    # CLOUDFLARE_API_TOKEN lives in the `production` environment rather than as
+    # a plain repository secret, so the job has to declare the environment to
+    # see it at all. Without this line `secrets.CLOUDFLARE_API_TOKEN` resolves
+    # to an empty string and wrangler-action fails on an unauthenticated call
+    # rather than on a missing secret.
+    environment: production
     steps:
       - uses: actions/checkout@v4
 

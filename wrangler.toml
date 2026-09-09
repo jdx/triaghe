@@ -12,7 +12,7 @@ assets = { directory = "./web", binding = "ASSETS", run_worker_first = true }
 [[d1_databases]]
 binding = "DB"
 database_name = "triaghe"
-database_id = "PLACEHOLDER_SET_BY_WRANGLER_D1_CREATE"
+database_id = "11bc1f6c-f7e5-4e81-a221-99e6ff3dd616"
 migrations_dir = "migrations"
 
 [triggers]
@@ -29,12 +29,14 @@ TRIAGHE_SCOPE = "user:jdx"
 # Both are public identifiers, not secrets.
 ACCESS_TEAM_DOMAIN = "PLACEHOLDER.cloudflareaccess.com"
 ACCESS_AUD = "PLACEHOLDER_ACCESS_AUD_TAG"
-# Only this identity may approve a post to GitHub.
-OWNER_EMAIL = "claude@jdx.dev"
 
 # Secrets (set with `wrangler secret put`, never in this file):
 #   GITHUB_APP_ID
 #   GITHUB_APP_INSTALLATION_ID
 #   GITHUB_APP_PRIVATE_KEY
+#   OWNER_EMAIL   the single identity allowed to approve a post to GitHub.
+#                 A secret rather than a var purely to keep a personal address
+#                 out of a public repository; it is not a credential, and
+#                 nothing about the security model depends on it being hidden.
 [observability]
 enabled = true

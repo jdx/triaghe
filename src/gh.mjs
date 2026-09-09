@@ -109,17 +109,25 @@ const ENDPOINT = 'https://api.github.com/graphql';
  * capped tighter than the node version because this runs inside a scheduled
  * Worker where wall-clock time is not free.
  */
-export async function graphql(env, query, variables = {}, { retries = 3 } = {}) {
+export async function graphql(env, query, variables = {}, { retries = 3, write = false } = {}) {
   for (let attempt = 0; ; attempt++) {
-    const res = await fetch(ENDPOINT, {
-      method: 'POST',
-      headers: {
-        authorization: `bearer ${await token(env)}`,
-        'content-type': 'application/json',
-        'user-agent': 'triaghe',
-      },
-      body: JSON.stringify({ query, variables }),
-    });
+    let res;
+    try {
+      res = await fetch(ENDPOINT, {
+        method: 'POST',
+        headers: {
+          authorization: `bearer ${await token(env)}`,
+          'content-type': 'application/json',
+          'user-agent': 'triaghe',
+        },
+        body: JSON.stringify({ query, variables }),
+      });
+    } catch (e) {
+      // A mutation whose connection dropped may well have been applied. Reads
+      // can be retried freely; a write cannot, so the caller is told the
+      // outcome is unknown rather than that it failed.
+      throw Object.assign(new Error(`github request failed: ${e.message}`), { uncertain: write });
+    }
 
     // GitHub answers 403 both for "slow down" and for "this key is not allowed
     // here". Retrying the second is pure waste: a revoked key or an uninstalled
@@ -143,8 +151,18 @@ export async function graphql(env, query, variables = {}, { retries = 3 } = {}) 
       continue;
     }
 
-    const text = await res.text();
-    if (!res.ok) throw new Error(`github ${res.status}: ${text.slice(0, 300)}`);
+    let text;
+    try {
+      text = await res.text();
+    } catch (e) {
+      // The mutation was accepted; only the response body was lost.
+      throw Object.assign(new Error(`github response unreadable: ${e.message}`),
+        { status: res.status, uncertain: write && res.ok });
+    }
+    if (!res.ok) {
+      throw Object.assign(new Error(`github ${res.status}: ${text.slice(0, 300)}`),
+        { status: res.status, uncertain: write && res.status >= 500 });
+    }
 
     const json = JSON.parse(text);
     if (json.errors?.length) {

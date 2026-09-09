@@ -471,7 +471,10 @@ function renderDetail() {
               method: 'POST', body: JSON.stringify({ body: ta.value }),
             });
             state.detail = edited;
-            revision = edited.drafts?.find((x) => x.id === d.id)?.revision ?? revision;
+            // The revision this edit produced, reported by the UPDATE itself.
+            // Reading it back off the returned snapshot would pick up an agent
+            // edit that landed in between, and approve text never displayed.
+            revision = edited.edited_revision ?? revision;
           }
           state.detail = await api(`/api/drafts/${d.id}/approve`, {
             method: 'POST', body: JSON.stringify({ expected_revision: revision }),

@@ -295,12 +295,23 @@ async function handleDraftAction(env, draftId, action, body, identity) {
     if (draft.status !== 'pending') return { status: 409, body: { error: `draft is ${draft.status}` } };
     // Every edit bumps the revision. That is what lets approve tell "the text I
     // read" from "the text that is there now".
-    const res = await run(env,
-      "UPDATE drafts SET body=?, revision=revision+1 WHERE id=? AND status='pending'",
+    //
+    // RETURNING matters here: it hands back the revision *this* UPDATE
+    // produced. Reading it from a later itemDetail snapshot instead would let
+    // an agent edit landing in the gap supply its own revision to the caller,
+    // which the browser would then approve without ever displaying — the exact
+    // hole the revision check exists to close.
+    const updated = await first(env,
+      `UPDATE drafts SET body=?, revision=revision+1
+       WHERE id=? AND status='pending' RETURNING revision`,
       String(body.body ?? ''), draftId);
-    if (!res.meta?.changes) return { status: 409, body: { error: 'draft is no longer pending' } };
-    await log(env, identity.actor, 'draft.edit', draft.item_id, { draft_id: draftId });
-    return { status: 200, body: await itemDetail(env, draft.item_id) };
+    if (!updated) return { status: 409, body: { error: 'draft is no longer pending' } };
+    await log(env, identity.actor, 'draft.edit', draft.item_id,
+      { draft_id: draftId, revision: updated.revision });
+    return {
+      status: 200,
+      body: { ...(await itemDetail(env, draft.item_id)), edited_revision: updated.revision },
+    };
   }
 
   if (action === 'reject') {

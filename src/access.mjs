@@ -93,8 +93,8 @@ export async function identify(request, env) {
   const local = url.hostname === 'localhost' || url.hostname === '127.0.0.1';
 
   // `wrangler dev` has no Access in front of it. The bypass needs an explicit
-  // var AND a loopback hostname; the deployed Worker is only routable as
-  // inbox.jdx.dev, so this branch is unreachable in production.
+  // var AND a loopback hostname; the deployed Worker is only routable as its
+  // Access hostname, so this branch is unreachable in production.
   if (local && env.DEV_IDENTITY) {
     const agent = env.DEV_IDENTITY === 'agent';
     return {

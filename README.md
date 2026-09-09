@@ -131,13 +131,18 @@ npx wrangler d1 migrations apply triaghe --remote
 npx wrangler secret put GITHUB_APP_ID
 npx wrangler secret put GITHUB_APP_INSTALLATION_ID
 npx wrangler secret put GITHUB_APP_PRIVATE_KEY   # paste the .pem, BEGIN line included
+npx wrangler secret put OWNER_EMAIL              # the one address allowed to approve
 ```
+
+`OWNER_EMAIL` is a secret only to keep a personal address out of a public
+repository. It is not a credential: the approve gate compares it against a
+signed Access claim, so knowing the address grants nothing.
 
 The `.pem` GitHub gives you is PKCS#1. WebCrypto only imports PKCS#8, so
 `src/gh.mjs` wraps it at runtime — no `openssl` step needed.
 
-**3. Cloudflare Access** — create a self-hosted application for
-`inbox.jdx.dev`.
+**3. Cloudflare Access** — create a self-hosted application for the hostname
+you will serve the board on.
 
 - Policy 1, `Allow`: emails ending in your domain, or the single owner email.
 - Policy 2, `Service Auth`: the service token jdx-bot will use.
@@ -148,6 +153,23 @@ The `.pem` GitHub gives you is PKCS#1. WebCrypto only imports PKCS#8, so
 to the repository's Actions secrets. `.github/workflows/deploy.yml` then applies
 migrations and deploys on every push to `main`. Fork PRs cannot read that
 secret and the workflow does not run on `pull_request`.
+
+## Tests
+
+```sh
+npm test
+```
+
+`node --test` against in-memory SQLite with the real migrations applied and a
+stubbed `fetch`. The handlers under test are the actual ones — every concurrency
+bug found so far lived in the exact SQL, so a double that accepted statements
+without running them would have proved nothing.
+
+Coverage is deliberately narrow: the races and coverage gaps that fail
+*silently*. Stale-revision approval, two concurrent approvals posting once,
+an edit reporting its own revision, an exhausted search window still advancing
+its checkpoint, and ambiguous GitHub write outcomes. They run on pull requests
+and need no secrets.
 
 ## Local development
 

@@ -9,7 +9,8 @@
     "deploy": "wrangler deploy",
     "migrate:local": "wrangler d1 migrations apply triaghe --local",
     "migrate:remote": "wrangler d1 migrations apply triaghe --remote",
-    "tail": "wrangler tail"
+    "tail": "wrangler tail",
+    "test": "node --test \"test/**/*.test.mjs\""
   },
   "devDependencies": {
     "wrangler": "^4.42.0"

@@ -21,6 +21,9 @@ export async function postComment(env, item, body) {
          }
        }`,
       { id: item.node_id, body },
+      // Marks transport failures and 5xx as ambiguous rather than failed, so a
+      // lost response cannot be retried into a duplicate discussion reply.
+      { write: true },
     );
     return data.addDiscussionComment.comment.url;
   }

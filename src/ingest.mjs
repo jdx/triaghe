@@ -65,7 +65,18 @@ query($q: String!, $type: SearchType!, $after: String) {
 }`;
 
 const trunc = (s, n) => (s == null ? null : s.length > n ? s.slice(0, n) : s);
-const day = (d) => new Date(d).toISOString().slice(0, 10);
+
+/**
+ * Search bounds at second precision.
+ *
+ * These were calendar days, which quietly capped what a window could ever
+ * drain. GitHub's `updated:` qualifier accepts full timestamps; with days, a
+ * checkpoint advanced to 14:20 still produced a query starting at 00:00, so a
+ * day holding more results than the page budget refetched the same prefix on
+ * every poll and never reached the rest. Timestamps make an advanced checkpoint
+ * actually narrow the next window.
+ */
+const stamp = (d) => new Date(d).toISOString().replace(/\.\d{3}Z$/, 'Z');
 
 /**
  * One search window, paged up to `maxPages`.
@@ -80,7 +91,7 @@ const day = (d) => new Date(d).toISOString().slice(0, 10);
  */
 async function searchWindow(env, type, since, until, maxPages, { asc = false } = {}) {
   const sort = asc ? 'sort:updated-asc' : 'sort:updated-desc';
-  const q = `${searchScope(env)} updated:${day(since)}..${day(until)} ${sort}`;
+  const q = `${searchScope(env)} updated:${stamp(since)}..${stamp(until)} ${sort}`;
   const out = [];
   let after = null;
   let complete = false;
@@ -306,6 +317,11 @@ export async function ingestOnce(env, { full = false } = {}) {
     const edge = newest ? new Date(newest) : since;
     if (edge < covered) covered = edge;
   }
+  // Guarantee forward motion. If every result in an exhausted window shares one
+  // second, the boundary equals `since` and the next poll would ask the same
+  // question forever. Stepping one second past it can only skip records that
+  // were already stored by this run.
+  if (truncated && covered <= since) covered = new Date(since.getTime() + 1000);
   report.incremental_truncated = truncated;
   await setMeta(env, 'last_ingest_at', covered.toISOString());
 
@@ -328,6 +344,10 @@ export async function ingestOnce(env, { full = false } = {}) {
       report.backfill_truncated = true;
       const edge = oldest ? new Date(oldest) : cursor;
       if (edge > reached) reached = edge;
+    }
+    // Same guarantee walking backwards.
+    if (report.backfill_truncated && reached >= cursor) {
+      reached = new Date(cursor.getTime() - 1000);
     }
     await setMeta(env, 'backfill_cursor', reached.toISOString());
     report.backfill_to = reached.toISOString();

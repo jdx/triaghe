@@ -202,3 +202,31 @@ h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: v
   border-top: 1px solid var(--line);
 }
 .pager .oc:disabled { opacity: .4; cursor: default; }
+
+/* Mentions are the one signal promoted above the rest of the queue, so they get
+   the only saturated colour in the list. */
+.badge.mention {
+  border-color: var(--warn);
+  color: var(--warn);
+  font-weight: 600;
+}
+.row.mention { border-left: 2px solid var(--warn); }
+
+/* Feed: the audit view. Denser than the triage list and not selectable, since
+   it is for reading rather than working. */
+.feedbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+}
+.feedrow { cursor: pointer; }
+.feedbody {
+  margin: 4px 0 0;
+  padding-left: 2px;
+  font-size: 12px;
+  line-height: 1.45;
+  opacity: .85;
+  overflow-wrap: anywhere;
+}

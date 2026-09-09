@@ -22,7 +22,7 @@ const LIST_COLUMNS = `
   i.author_assoc, i.state, i.is_answered, i.is_draft, i.locked, i.labels,
   i.category, i.comment_count, i.created_at, i.updated_at, i.last_actor,
   i.last_actor_is_bot, i.last_actor_at, i.last_owner_at, i.last_human_at,
-  i.last_human_actor`;
+  i.last_human_actor, i.resolved_at, i.last_mention_at, i.last_mention_actor`;
 
 const TRIAGE_COLUMNS = `
   t.outcome, t.note, t.marked_by, t.marked_at, t.marked_at_activity, t.snoozed_until`;
@@ -33,8 +33,8 @@ const TRIAGE_COLUMNS = `
  * the cheapest request in the app scan the same width as the most expensive one.
  */
 const STATE_COLUMNS = `
-  i.state, i.is_answered, i.last_actor, i.last_actor_at, i.last_owner_at,
-  i.last_human_at, i.last_human_actor,
+  i.state, i.is_answered, i.resolved_at, i.last_actor, i.last_actor_at,
+  i.last_owner_at, i.last_human_at, i.last_human_actor, i.last_mention_at,
   t.outcome, t.marked_at_activity, t.snoozed_until`;
 
 const PENDING_DRAFTS =
@@ -59,6 +59,9 @@ function decorate(row) {
     note: row.note ?? null,
     marked_by: row.marked_by ?? null,
     marked_at: row.marked_at ?? null,
+    last_mention_at: row.last_mention_at ?? null,
+    last_mention_actor: row.last_mention_actor ?? null,
+    resolved_at: row.resolved_at ?? null,
     snoozed_until: row.snoozed_until ?? null,
     priority: priority(row, s.state),
     pending_drafts: row.pending_drafts ?? 0,
@@ -87,6 +90,16 @@ async function listItems(env, params) {
   let out = rows.map(decorate);
   if (wanted && wanted !== 'all') out = out.filter((i) => i.triage_state === wanted);
 
+  // Outstanding mentions: tagged, not since answered, and still actionable.
+  //
+  // The triage_state test is the load-bearing half. Without it, ignoring or
+  // snoozing a mention left it sitting in the Mentions list while the badge —
+  // which counts only actionable items — went down, so the tab claimed one
+  // thing and the count another. Dismissal has to work here like everywhere.
+  if (params.get('mentions') === '1') {
+    out = out.filter((i) => isOutstandingMention(i) && i.triage_state === 'needs_you');
+  }
+
   out.sort((a, b) =>
     b.priority - a.priority
     || Date.parse(b.last_human_at || b.updated_at) - Date.parse(a.last_human_at || a.updated_at));
@@ -98,6 +111,97 @@ async function listItems(env, params) {
   const limit = clampInt(params.get('limit'), 200, 1, 500);
   const offset = clampInt(params.get('offset'), 0, 0, Number.MAX_SAFE_INTEGER);
   return { total: out.length, limit, offset, items: out.slice(offset, offset + limit) };
+}
+
+/**
+ * Everything that happened, newest first.
+ *
+ * This is the audit surface rather than the work surface. The board answers
+ * "what needs me"; the feed answers "what has actually been going on", which is
+ * how you check the poller is doing its job. It deliberately shows bot activity
+ * and resolved threads — the things triage filters out are exactly the things
+ * you want visible when you are verifying coverage.
+ */
+async function feed(env, params) {
+  const where = [];
+  const binds = [];
+  if (params.get('repo')) { where.push('repo = ?'); binds.push(params.get('repo')); }
+  if (params.get('kind')) { where.push('item_kind = ?'); binds.push(params.get('kind')); }
+  if (params.get('mentions') === '1') where.push('mentions_owner = 1');
+  if (params.get('humans') === '1') where.push('actor_is_bot = 0');
+
+  const limit = clampInt(params.get('limit'), 100, 1, 500);
+
+  // Keyset, not offset.
+  //
+  // The feed reads a table scheduled ingestion writes to. With numeric offsets,
+  // any event inserted between two page requests shifts every later offset by
+  // one, so "older" hands back a row the previous page already showed. An audit
+  // surface that repeats and drops rows while you page through it cannot be
+  // used to check the poller, which is the only reason it exists.
+  //
+  // `(at, gh_id)` is unique and totally ordered, so a cursor names a position
+  // in the data rather than a count of rows before it. Inserts land above the
+  // cursor and leave the page you asked for exactly where it was.
+  const cursor = parseCursor(params.get('cursor'));
+  if (cursor) {
+    where.push('(at < ? OR (at = ? AND gh_id < ?))');
+    binds.push(cursor.at, cursor.at, cursor.id);
+  }
+
+  // Opening a thread is an event too, so the feed unions comments with the
+  // items themselves. Both sides carry the same shape.
+  const sql = `
+    SELECT * FROM (
+      SELECT c.created_at AS at, 'comment' AS event, c.author AS actor,
+             c.author_is_bot AS actor_is_bot, c.body AS body,
+             c.mentions_owner AS mentions_owner, c.gh_id AS gh_id,
+             i.id AS item_id, i.repo AS repo, i.kind AS item_kind,
+             i.number AS number, i.title AS title, i.url AS url
+      FROM comments c JOIN items i ON i.id = c.item_id
+      UNION ALL
+      SELECT i.created_at AS at, 'opened' AS event, i.author AS actor,
+             i.author_is_bot AS actor_is_bot, NULL AS body,
+             -- The opening post's own flag, not the item's aggregate: that
+             -- aggregate may refer to a later comment, which would put the
+             -- wrong event in a mentions-filtered feed.
+             i.body_mentions_owner AS mentions_owner, i.id AS gh_id,
+             i.id AS item_id, i.repo AS repo, i.kind AS item_kind,
+             i.number AS number, i.title AS title, i.url AS url
+      FROM items i
+    )
+    ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+    ORDER BY at DESC, gh_id DESC LIMIT ?`;
+
+  const rows = await all(env, sql, ...binds, limit + 1);
+  const events = rows.slice(0, limit);
+  const last = events[events.length - 1];
+  return {
+    limit,
+    // No COUNT(*) over the union on every page — the feed is scrolled, not
+    // counted, so it reports only whether another page exists.
+    has_more: rows.length > limit,
+    next_cursor: rows.length > limit && last ? `${last.at}|${last.gh_id}` : null,
+    events,
+  };
+}
+
+/** `at|gh_id`, as handed back by the previous page. Anything else is page one. */
+function parseCursor(raw) {
+  const cut = raw ? raw.indexOf('|') : -1;
+  if (cut < 1) return null;
+  const at = raw.slice(0, cut);
+  const id = raw.slice(cut + 1);
+  return id ? { at, id } : null;
+}
+
+/**
+ * A mention still waiting on the owner. Shared so the list filter and the badge
+ * cannot drift apart; they disagreeing is what made dismissal look broken.
+ */
+function isOutstandingMention(row) {
+  return !!row.last_mention_at
+    && (!row.last_owner_at || Date.parse(row.last_mention_at) > Date.parse(row.last_owner_at));
 }
 
 /** Integer query params: fall back to `dflt` unless the value is a real number. */
@@ -288,15 +392,20 @@ async function stats(env) {
   ]);
 
   const counts = {};
+  let mentions = 0;
   for (const r of byState) {
     const s = computeState(r, r).state;
     counts[s] = (counts[s] || 0) + 1;
+    // Mentions worth surfacing are the ones still waiting on the owner; a tag
+    // you have already replied to is not outstanding.
+    if (s === 'needs_you' && isOutstandingMention(r)) mentions++;
   }
 
   return {
     total: byState.length,
     by_state: counts,
     inbox: counts.needs_you ?? 0,
+    mentions,
     by_repo: Object.fromEntries(byRepo.map((r) => [r.repo, r.c])),
     repos: byRepo.map((r) => r.repo).sort(),
     pending_drafts: pending?.c ?? 0,
@@ -438,6 +547,9 @@ export async function handleApi(request, env, ctx, identity) {
   if (method === 'GET' && p === '/api/stats') return { status: 200, body: await stats(env) };
   if (method === 'GET' && p === '/api/items') {
     return { status: 200, body: await listItems(env, url.searchParams) };
+  }
+  if (method === 'GET' && p === '/api/feed') {
+    return { status: 200, body: await feed(env, url.searchParams) };
   }
   if (method === 'GET' && p === '/api/events') {
     return { status: 200, body: await all(env, 'SELECT * FROM events ORDER BY id DESC LIMIT 200') };

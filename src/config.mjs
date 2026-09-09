@@ -49,3 +49,18 @@ export function isBot(login, authorType) {
 export function isOwner(login, owner) {
   return !!login && !!owner && login.toLowerCase() === owner.toLowerCase();
 }
+
+/**
+ * Does this text tag the owner?
+ *
+ * Deliberately strict about both edges. The leading class rejects an address
+ * like `ship@jdx.dev`, which is not a mention; the trailing lookahead rejects
+ * `@jdxcode`, which is a different account. Being tagged is the one signal
+ * promoted above the rest of the stream, so a false positive there costs more
+ * than elsewhere.
+ */
+export function mentionsOwner(text, owner) {
+  if (!text || !owner) return false;
+  const safe = String(owner).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(^|[^A-Za-z0-9._/-])@${safe}(?![A-Za-z0-9-])`, 'i').test(text);
+}

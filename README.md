@@ -37,7 +37,7 @@ Computed in `src/state.mjs` — pure, deterministic, no model.
 |---|---|
 | `needs_you` | something arrived from outside more recently than you replied |
 | `awaiting_them` | you spoke last |
-| `done` | closed, answered, or marked by you/jdx-bot |
+| `done` | closed, answered, or marked by you/jdx-bot — until someone comments after it was resolved |
 | `snoozed` | hidden until a date |
 
 The load-bearing detail is `last_human_at`: activity by a non-owner, non-bot
@@ -54,6 +54,88 @@ scores at most 10, a person always scores at least 20. That is ordering only.
 They stay fully visible and fully counted.
 
 A mark sticks until something new arrives after it.
+
+`done` is not permanent. People keep talking on closed threads — "this broke
+again in 2.1", "how do I do the thing you mentioned" — and that is precisely the
+traffic GitHub notifications used to surface. A closed, merged, or answered item
+returns to `needs_you` when someone comments **after** `resolved_at` and the
+owner has not replied since. Without that timestamp the question is unanswerable,
+which is why ingest records it.
+
+## Mentions
+
+Being tagged is someone asking for you specifically rather than leaving a message
+the queue happens to contain, so it is tracked apart from ordinary activity and
+sorts above everything else in the inbox.
+
+- `@you` is matched strictly: `ship@you.dev` is not a mention and `@yourhandle2`
+  is a different account (`mentionsOwner` in `src/config.mjs`).
+- A mention counts as outstanding only until you reply — answering it clears it.
+- Ingest runs a small extra `mentions:<owner>` search **without** the `user:`
+  scope. Your own repos are already covered by the main window; this exists for
+  the other case, being tagged in somebody else's project, which is the one class
+  of miss that is completely invisible once notifications are off.
+- That search keeps its **own** checkpoint (`mentions_ingest_at`) and reports its
+  own truncation. Sharing `last_ingest_at` meant the checkpoint advanced on the
+  strength of the main sweep, so anything the mention window did not reach was
+  skipped rather than retried.
+- Dismissal works here like everywhere: marking or snoozing a mention removes it
+  from the list, not only from the badge.
+
+## Feed
+
+`/api/feed` and the **Feed** tab are the audit surface: every comment and every
+opened thread, newest first, filterable by repo and kind.
+
+It deliberately shows what triage hides — bot traffic, closed threads, things
+already marked. The inbox answers "what needs me"; the feed answers "what has
+actually been happening", which is how you check the poller is doing its job
+before trusting it instead of GitHub's own notifications.
+
+### Coverage is measured, not assumed
+
+A feed built from the ingest stream can only show what that stream collected; on
+its own it cannot demonstrate that nothing was missed. The truncation flags do
+not close that gap either, since they are derived from the same paging that did
+the losing — they report that a loop stopped early, not whether anything was
+actually lost.
+
+So every search window also reads GitHub's own `issueCount` for that window, and
+each run records what GitHub said existed against what it came away with:
+
+```json
+"coverage": {
+  "expected": 812, "fetched": 812,
+  "comments_missing": 0, "threads_incomplete": 0,
+  "abandoned": [], "shortfall": 0
+}
+```
+
+Those numbers do not come from our paging, which is what makes them worth
+anything. A non-zero `shortfall` is shown on the board, and it catches a failure
+mode nobody anticipated rather than only the ones that were.
+
+`issueCount` counts threads, so it is only half the question. A thread can be
+collected whole as far as the search is concerned while its comment connection
+— bounded, because the sweep reads many threads — quietly omitted the tail, and
+any mention inside it. So each thread also carries GitHub's own comment and
+reply totals against what is stored, and `shortfall` is both gaps. Threads with
+a gap are paged to the end, a few per run, by a drain pass that runs after the
+sweep.
+
+### Windows resume; they are not stepped over
+
+A window that runs out of pages keeps its bounds and its cursor, and the next
+run continues from there. The checkpoint does not advance until the window is
+actually finished. Advancing it by a second to guarantee forward motion — which
+is what this used to do — permanently skips any result sharing the boundary
+timestamp that the page budget did not reach.
+
+GitHub search stops at 1000 results, so some windows cannot be paged to the end
+by anybody. After `MAX_WINDOW_PAGES` the window is abandoned so it cannot block
+every later poll behind it; it is named in `coverage.abandoned` and its
+remainder stays counted in `shortfall`. Giving up is a thing the board says out
+loud, not a thing it does quietly.
 
 ## Security model
 
@@ -144,6 +226,11 @@ The `.pem` GitHub gives you is PKCS#1. WebCrypto only imports PKCS#8, so
 **3. Cloudflare Access** — create a self-hosted application for the hostname
 you will serve the board on.
 
+`wrangler.toml` sets `workers_dev = false` and `preview_urls = false`, so that
+Access hostname is the only route in. Both default to *enabled* when absent,
+which publishes the board on `<name>.<subdomain>.workers.dev` — a hostname the
+Access application does not sit in front of.
+
 - Policy 1, `Allow`: emails ending in your domain, or the single owner email.
 - Policy 2, `Service Auth`: the service token jdx-bot will use.
 - Copy the **Application Audience (AUD)** tag and your team domain into
@@ -167,9 +254,11 @@ without running them would have proved nothing.
 
 Coverage is deliberately narrow: the races and coverage gaps that fail
 *silently*. Stale-revision approval, two concurrent approvals posting once,
-an edit reporting its own revision, an exhausted search window still advancing
-its checkpoint, and ambiguous GitHub write outcomes. They run on pull requests
-and need no secrets.
+an edit reporting its own revision, a truncated search window resuming instead
+of skipping tied results, comments beyond the tail being counted and then
+fetched, closed-thread reactivation ordering, feed pages that must not repeat
+rows while ingestion writes underneath them, and ambiguous GitHub write
+outcomes. They run on pull requests and need no secrets.
 
 ## Local development
 
@@ -189,7 +278,9 @@ that branch is unreachable in production.
 ```
 GET  /api/whoami                         verified identity + whether it may approve
 GET  /api/stats
-GET  /api/items?state=&repo=&kind=&q=&limit=&offset=
+GET  /api/items?state=&repo=&kind=&q=&mentions=&limit=&offset=
+GET  /api/feed?repo=&kind=&mentions=&humans=&limit=&cursor=   raw activity, newest first
+                                         cursor: `next_cursor` from the previous page
 GET  /api/items/:id                      detail + comments + drafts + injection flags
 POST /api/items/:id/mark    {outcome, note}   outcome:null clears
 POST /api/items/:id/snooze  {days}

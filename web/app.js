@@ -20,6 +20,15 @@ const state = {
   limit: 200,
   offset: 0,
   total: 0,
+  events: [],
+  feedHasMore: false,
+  feedHumansOnly: false,
+  // The feed pages by cursor rather than offset, because ingestion writes to it
+  // while it is being read and an offset would slide underneath. `feedTrail` is
+  // how "newer" works without one: the cursor of each page already visited.
+  feedCursor: null,
+  feedNextCursor: null,
+  feedTrail: [],
   // Draft text the owner has typed but not yet approved, keyed by draft id.
   // The 60s auto-refresh rebuilds the detail pane from server state; without
   // this, it silently replaced whatever was half-written in the textarea.
@@ -28,11 +37,17 @@ const state = {
 
 const TABS = [
   ['needs_you', 'Inbox'],
+  ['mentions', 'Mentions'],
   ['awaiting_them', 'Waiting'],
   ['snoozed', 'Snoozed'],
   ['done', 'Done'],
   ['all', 'All'],
+  ['feed', 'Feed'],
 ];
+
+// Tabs that are views over activity rather than over the triage queue.
+const MENTIONS_TAB = 'mentions';
+const FEED_TAB = 'feed';
 
 const OUTCOME_LABEL = {
   responded: 'responded', pr_opened: 'PR opened', ignored: 'ignored',
@@ -84,11 +99,15 @@ async function api(path, options) {
 }
 
 async function refresh() {
+  if (state.tab === FEED_TAB) return refreshFeed();
   const params = new URLSearchParams({
-    state: state.tab,
+    // Mentions is a filter over every state, not a state of its own: a tag on
+    // a thread you are already waiting on still counts as being tagged.
+    state: state.tab === MENTIONS_TAB ? 'all' : state.tab,
     limit: String(state.limit),
     offset: String(state.offset),
   });
+  if (state.tab === MENTIONS_TAB) params.set('mentions', '1');
   if (state.repo) params.set('repo', state.repo);
   if (state.kind) params.set('kind', state.kind);
   if (state.q) params.set('q', state.q);
@@ -111,16 +130,51 @@ async function refresh() {
   render();
 }
 
+/**
+ * The feed is the audit view: raw activity, newest first, no triage filtering.
+ * It exists to answer "is the poller actually seeing things", so it shows bot
+ * traffic and closed threads that the inbox deliberately hides.
+ */
+async function refreshFeed() {
+  const params = new URLSearchParams({ limit: String(state.limit) });
+  if (state.feedCursor) params.set('cursor', state.feedCursor);
+  if (state.repo) params.set('repo', state.repo);
+  if (state.kind) params.set('kind', state.kind);
+  if (state.feedHumansOnly) params.set('humans', '1');
+
+  const [page, stats] = await Promise.all([
+    api(`/api/feed?${params}`),
+    api('/api/stats'),
+  ]);
+  state.events = page.events;
+  state.feedHasMore = page.has_more;
+  state.feedNextCursor = page.next_cursor ?? null;
+  state.stats = stats;
+  render();
+}
+
+/** Any change to what is being listed starts both pagers over. */
+function resetPaging() {
+  state.offset = 0;
+  state.feedCursor = null;
+  state.feedNextCursor = null;
+  state.feedTrail = [];
+}
+
 /* ---------- render ---------- */
 
 function renderTabs() {
   const nav = $('#tabs');
   nav.replaceChildren();
   for (const [key, label] of TABS) {
-    const count = key === 'all' ? state.stats.total : (state.stats.by_state?.[key] ?? 0);
+    const count = key === FEED_TAB ? null
+      : key === MENTIONS_TAB ? (state.stats.mentions ?? 0)
+      : key === 'all' ? state.stats.total
+      : (state.stats.by_state?.[key] ?? 0);
     const b = el('button', key === state.tab ? 'tab active' : 'tab');
-    b.append(el('span', null, label), el('span', 'count', count ?? 0));
-    b.onclick = () => { state.tab = key; state.cursor = 0; state.offset = 0; refresh(); };
+    b.append(el('span', null, label));
+    if (count != null) b.append(el('span', 'count', count));
+    b.onclick = () => { state.tab = key; state.cursor = 0; resetPaging(); refresh(); };
     nav.append(b);
   }
 }
@@ -135,20 +189,82 @@ function renderFacets() {
     li.append(b);
     return li;
   };
-  repos.append(mk('all repos', !state.repo, () => { state.repo = null; state.offset = 0; refresh(); }));
+  repos.append(mk('all repos', !state.repo, () => { state.repo = null; resetPaging(); refresh(); }));
   for (const r of state.stats.repos ?? []) {
-    repos.append(mk(r.replace(/^.*\//, ''), state.repo === r, () => { state.repo = r; state.offset = 0; refresh(); }));
+    repos.append(mk(r.replace(/^.*\//, ''), state.repo === r, () => { state.repo = r; resetPaging(); refresh(); }));
   }
 
   const kinds = $('#kinds');
   kinds.replaceChildren();
-  kinds.append(mk('all', !state.kind, () => { state.kind = null; state.offset = 0; refresh(); }));
+  kinds.append(mk('all', !state.kind, () => { state.kind = null; resetPaging(); refresh(); }));
   for (const k of ['discussion', 'issue', 'pr']) {
-    kinds.append(mk(k, state.kind === k, () => { state.kind = k; state.offset = 0; refresh(); }));
+    kinds.append(mk(k, state.kind === k, () => { state.kind = k; resetPaging(); refresh(); }));
   }
 }
 
+function renderFeed() {
+  const list = $('#list');
+  list.replaceChildren();
+
+  const bar = el('div', 'feedbar');
+  const toggle = el('button', state.feedHumansOnly ? 'facet-btn active' : 'facet-btn',
+    state.feedHumansOnly ? 'people only' : 'everything');
+  toggle.onclick = () => {
+    state.feedHumansOnly = !state.feedHumansOnly;
+    resetPaging();
+    refresh();
+  };
+  bar.append(el('span', 'dim', 'showing'), toggle);
+  list.append(bar);
+
+  if (!state.events.length) {
+    list.append(el('p', 'empty', 'No activity recorded yet.'));
+    return;
+  }
+
+  for (const e of state.events) {
+    const row = el('article', 'row feedrow' + (e.mentions_owner ? ' mention' : ''));
+    row.onclick = () => openDetail(e.item_id);
+
+    const top = el('div', 'row-top');
+    top.append(el('span', 'age', relTime(e.at)));
+    top.append(el('span', `kind ${e.item_kind}`, e.item_kind === 'pr' ? 'PR' : e.item_kind));
+    top.append(el('span', 'repo', e.repo.replace(/^.*\//, '')));
+    top.append(el('span', 'num', `#${e.number}`));
+    top.append(el('span', 'title', e.title));
+    row.append(top);
+
+    const bot = el('div', 'row-bot');
+    bot.append(el('span', 'who', e.actor || 'unknown'));
+    bot.append(el('span', 'why', e.event === 'opened' ? 'opened this' : 'commented'));
+    if (e.mentions_owner) bot.append(el('span', 'badge mention', 'mentioned you'));
+    if (e.actor_is_bot) bot.append(el('span', 'badge label', 'bot'));
+    row.append(bot);
+
+    // One line of the comment, as plain text like everywhere else.
+    if (e.body) {
+      row.append(el('p', 'dim feedbody', e.body.replace(/\s+/g, ' ').slice(0, 220)));
+    }
+    list.append(row);
+  }
+
+  const pager = el('div', 'pager');
+  const prev = el('button', 'oc muted', '← newer');
+  prev.disabled = !state.feedTrail.length;
+  prev.onclick = () => { state.feedCursor = state.feedTrail.pop() ?? null; refresh(); };
+  const next = el('button', 'oc muted', 'older →');
+  next.disabled = !state.feedHasMore || !state.feedNextCursor;
+  next.onclick = () => {
+    state.feedTrail.push(state.feedCursor);
+    state.feedCursor = state.feedNextCursor;
+    refresh();
+  };
+  pager.append(prev, el('span', 'dim', `page ${state.feedTrail.length + 1}`), next);
+  list.append(pager);
+}
+
 function renderList() {
+  if (state.tab === FEED_TAB) return renderFeed();
   const list = $('#list');
   list.replaceChildren();
 
@@ -174,6 +290,10 @@ function renderList() {
     bot.append(el('span', 'who', it.last_human_actor || it.author || 'unknown'));
     bot.append(el('span', 'why', it.triage_reason));
     bot.append(el('span', 'age', relTime(it.last_human_at || it.updated_at)));
+    if (it.last_mention_at
+      && (!it.last_owner_at || Date.parse(it.last_mention_at) > Date.parse(it.last_owner_at))) {
+      bot.append(el('span', 'badge mention', `@ ${it.last_mention_actor || 'mentioned you'}`));
+    }
     if (it.pending_drafts) bot.append(el('span', 'badge draft', `${it.pending_drafts} draft`));
     if (it.open_requests) bot.append(el('span', 'badge queued', 'draft queued'));
     if (it.outcome) bot.append(el('span', 'badge done', OUTCOME_LABEL[it.outcome] ?? it.outcome));
@@ -424,9 +544,32 @@ function render() {
 
   // A board that silently knows less than it claims is worse than no board, so
   // the edges of its coverage are shown rather than inferred.
-  if (s.last_truncated) {
+  // A measured shortfall outranks the truncation flags: those say a loop
+  // stopped early, this says GitHub had rows we do not hold.
+  if (s.coverage?.shortfall > 0) {
+    // Two different gaps, and conflating them into one subtraction made the
+    // banner's own arithmetic wrong: threads the search returned and we did not
+    // store, and comments inside threads we did store.
+    const parts = [];
+    const threads = Math.max((s.coverage.expected ?? 0) - (s.coverage.fetched ?? 0), 0);
+    if (threads) parts.push(`${threads} items`);
+    if (s.coverage.comments_missing) {
+      parts.push(`${s.coverage.comments_missing} comments across `
+        + `${s.coverage.threads_incomplete} threads`);
+    }
+    meta.append(el('span', 'warn small', ` · not collected: ${parts.join(', ')}`));
+    if (s.coverage.abandoned?.length) {
+      meta.append(el('span', 'warn small',
+        ` · gave up paging ${s.coverage.abandoned.join(', ')}`));
+    }
+  } else if (s.last_truncated) {
     meta.append(el('span', 'warn small',
       ' · last sync hit its page limit — some updates are not in yet'));
+  } else if (s.mentions_truncated) {
+    // Called out separately: this is the cross-repository mention stream, the
+    // one with no other safety net once GitHub notifications are off.
+    meta.append(el('span', 'warn small',
+      ' · mention search hit its page limit — some @mentions may be missing'));
   } else if (s.last_ingest && !s.backfill_complete && s.backfill_cursor) {
     meta.append(el('span', 'dim',
       ` · history back to ${s.backfill_cursor.slice(0, 10)}, still filling in`));
@@ -465,6 +608,9 @@ async function openDetail(id) {
 document.addEventListener('keydown', (e) => {
   const typing = ['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName);
   if (typing && e.key !== 'Escape') return;
+  // The feed is a reading view over activity, not a cursor over `state.items`;
+  // j/k/r/x there would act on whatever the last triage list happened to hold.
+  if (state.tab === FEED_TAB && e.key !== 'Escape' && e.key !== '/') return;
   const cur = state.items[state.cursor];
 
   switch (e.key) {
@@ -487,7 +633,7 @@ let searchTimer;
 $('#search').addEventListener('input', (e) => {
   clearTimeout(searchTimer);
   const v = e.target.value;
-  searchTimer = setTimeout(() => { state.q = v; state.cursor = 0; state.offset = 0; refresh(); }, 200);
+  searchTimer = setTimeout(() => { state.q = v; state.cursor = 0; resetPaging(); refresh(); }, 200);
 });
 
 setInterval(refresh, 60_000);

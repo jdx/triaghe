@@ -45,6 +45,7 @@ const TABS = [
   ['mentions', 'Mentions'],
   ['awaiting_them', 'Waiting'],
   ['release', 'Releases'],
+  ['chore', 'Chores'],
   ['snoozed', 'Snoozed'],
   ['done', 'Done'],
   ['all', 'All'],

@@ -11,15 +11,34 @@ import { isReleasePr } from './config.mjs';
  * load-bearing detail: a CodeRabbit or Greptile review comment landing on a
  * contributor's PR must not mask the contributor who is actually waiting.
  *
- * Fall back to the last actor of any kind, which is how purely automated items
- * — renovate, dependabot, release PRs — still count as work. They are open PRs
- * on your repos and somebody has to merge them.
+ * Fall back to the last actor of any kind. This is still needed to answer "has
+ * anything happened here", but note what it is *not* used for any more: nothing
+ * below moves an item into the inbox on the strength of it.
  */
 function lastInbound(item) {
   if (item.last_human_at) return { at: item.last_human_at, who: item.last_human_actor, human: true };
   if (item.last_actor_at) return { at: item.last_actor_at, who: item.last_actor, human: false };
   return { at: null, who: null, human: false };
 }
+
+/**
+ * Automation cannot put anything in the inbox.
+ *
+ * Every path into `needs_you` goes through here, and the reason it has to is
+ * that Socket, Greptile, CodeRabbit and github-actions comment on essentially
+ * every pull request. Measured on the live board: a hand-cleared inbox went
+ * from 6 items to 12 in ninety minutes, and nine of the twelve were there
+ * because a bot had spoken. Two of those were items the owner had marked done
+ * an hour earlier; one was a *merged* PR that CodeRabbit commented on.
+ *
+ * That is not noise you can live with, because it compounds — an inbox that
+ * refills itself is one nobody trusts enough to empty. Bot activity still
+ * updates the item, still keeps its timestamps current, and still shows in the
+ * feed, which is the surface that exists to answer "is the poller working".
+ * It just never says somebody is waiting on you, because nobody is.
+ */
+const personWaitingSince = (item, inbound, lastOwner) =>
+  inbound.human && inbound.at && Date.parse(inbound.at) > lastOwner;
 
 export function computeState(item, triage) {
   const now = Date.now();
@@ -29,10 +48,16 @@ export function computeState(item, triage) {
   }
 
   const inbound = lastInbound(item);
+  const lastOwner = item.last_owner_at ? Date.parse(item.last_owner_at) : 0;
 
-  // A mark sticks until something new arrives after it.
+  // A mark sticks until a *person* arrives after it.
+  //
+  // This was the single largest source of the refill. Marking something done
+  // records the activity timestamp it was cleared at; any later activity used
+  // to undo that, and Socket posting its scan report an hour later counts as
+  // later activity. The owner's decision was being overturned by a robot.
   if (triage?.outcome) {
-    const newer = inbound.at && triage.marked_at_activity
+    const newer = inbound.human && inbound.at && triage.marked_at_activity
       && Date.parse(inbound.at) > Date.parse(triage.marked_at_activity);
     if (!newer) return { state: 'done', reason: `marked ${triage.outcome}` };
     return { state: 'needs_you', reason: `reopened: ${inbound.who} replied` };
@@ -49,12 +74,16 @@ export function computeState(item, triage) {
       ? 'answered on github'
       : `${String(item.state).toLowerCase()} on github`;
 
-    // Reopen only for activity that landed *after* GitHub resolved it, and that
-    // the owner has not already answered. Without `resolved_at` this cannot be
-    // asked, which is why it is now ingested.
+    // Reopen only for a person who turned up *after* GitHub resolved it, and
+    // whom the owner has not already answered. Without `resolved_at` this
+    // cannot be asked, which is why it is now ingested.
+    //
+    // The human requirement matters most here: a merged PR attracts CI results
+    // and review-bot summaries for hours afterwards, and every one of them was
+    // resurrecting it. A merged PR that CodeRabbit commented on is finished.
     const since = item.resolved_at ? Date.parse(item.resolved_at) : null;
-    const spoke = inbound.at ? Date.parse(inbound.at) : null;
-    const answered = item.last_owner_at ? Date.parse(item.last_owner_at) : 0;
+    const spoke = inbound.human && inbound.at ? Date.parse(inbound.at) : null;
+    const answered = lastOwner;
     if (since && spoke && spoke > since && spoke > answered) {
       return {
         state: 'needs_you',
@@ -82,13 +111,24 @@ export function computeState(item, triage) {
   // the check the lane is unconditional, and because both the Mentions filter
   // and the badge require `needs_you`, tagging the owner on a release PR would
   // have been the one way to make a direct request invisible.
-  const lastOwner = item.last_owner_at ? Date.parse(item.last_owner_at) : 0;
-  const personWaiting = inbound.human
-    && inbound.at
-    && Date.parse(inbound.at) > lastOwner;
+  const personWaiting = personWaitingSince(item, inbound, lastOwner);
 
   if (isReleasePr(item) && !personWaiting) {
     return { state: 'release', reason: `release cut by ${item.author} — merge to ship` };
+  }
+
+  // Everything else automation opened, in a lane beside Releases.
+  //
+  // Renovate and Dependabot open real work — somebody has to merge or close it
+  // — but it is a batch chore you sit down to, not a person waiting for a
+  // reply. Left in the inbox it is most of the volume, and after the change
+  // above it would otherwise have drifted into `awaiting_them` and read as
+  // "waiting on someone else", which is worse: nobody is coming.
+  //
+  // Yields to a person on the same terms Releases does. "This bump breaks the
+  // macOS build" belongs in the inbox no matter who opened the PR.
+  if (item.author_is_bot && !personWaiting) {
+    return { state: 'chore', reason: `opened by ${item.author} — merge or close` };
   }
 
   // Nothing has happened at all. Only reachable for an item with no author and
@@ -96,13 +136,23 @@ export function computeState(item, triage) {
   // not depend on that.
   if (!inbound.at) return { state: 'awaiting_them', reason: 'no activity' };
 
-  if (Date.parse(inbound.at) > lastOwner) {
-    const reason = inbound.human
-      ? lastOwner ? `${inbound.who} replied after you` : 'no reply yet'
-      : `automated (${item.author}) — needs a merge or a close`;
-    return { state: 'needs_you', reason };
+  if (personWaiting) {
+    return {
+      state: 'needs_you',
+      reason: lastOwner ? `${inbound.who} replied after you` : 'no reply yet',
+    };
   }
-  return { state: 'awaiting_them', reason: 'you spoke last' };
+
+  // Reached when the last word was the owner's, or was automation's on an item
+  // a person opened. The old wording here read "automated (jdx) — needs a merge
+  // or a close" on the owner's own pull requests: it named the *author* while
+  // describing the *actor*, so it was wrong twice over.
+  return {
+    state: 'awaiting_them',
+    reason: inbound.human || !inbound.at
+      ? 'you spoke last'
+      : `nothing since ${inbound.who} (automated)`,
+  };
 }
 
 /**

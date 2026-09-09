@@ -5,11 +5,18 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
 <title>triaghe</title>
+<!-- SVG only, with no .ico or PNG fallback. The stylesheet already leans on
+     :has(), so this board's browser floor sits well above the point where SVG
+     favicons landed; a PNG set would be bytes spent on browsers that cannot
+     render the page they are the icon for. -->
+<link rel="icon" href="/logo.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
 <header>
-  <h1>triaghe</h1>
+  <!-- alt is empty on purpose: the h1 already reads "triaghe", and a mark that
+       repeats the wordmark next to it just makes a screen reader say it twice. -->
+  <h1><img src="/logo.svg" alt="" width="18" height="18">triaghe</h1>
   <nav id="tabs"></nav>
   <input id="search" type="search" placeholder="filter by title or author" autocomplete="off" spellcheck="false">
   <span id="meta" class="meta"></span>

@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="triaghe">
+<!-- One inbound stream sorted into three outcomes: the board's whole job, drawn
+     as a branch graph because that is the visual language the source material
+     already speaks. The endpoint dots are the three kind colours from
+     style.css, so the mark carries the same legend as the list it sits above.
+
+     Colour lives in presentation attributes, never a <style> block or a style
+     attribute. The Worker serves this file under `default-src 'none'` with no
+     'unsafe-inline', which would drop an inline stylesheet and leave the mark
+     black. Presentation attributes are not covered by CSP, so they survive. -->
+<g fill="none" stroke="#7d879c" stroke-width="3" stroke-linecap="round">
+  <path d="M4 16H25"/>
+  <path d="M12 16C16 16 17 6 25 6"/>
+  <path d="M12 16C16 16 17 26 25 26"/>
+</g>
+<circle cx="25" cy="6" r="3.5" fill="#e0b341"/>
+<circle cx="25" cy="16" r="3.5" fill="#6ea8fe"/>
+<circle cx="25" cy="26" r="3.5" fill="#5ec98a"/>
+</svg>

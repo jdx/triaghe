@@ -22,11 +22,11 @@ const json = (body) =>
  * every request, so a test can assert that the poller actually moved — either
  * to a new window, or further into the one it had not finished.
  *
- * `threadFor` answers the single-thread query the drain pass uses. Left out, a
- * thread reads as having no comment connection at all, which is how the search
- * tests stay about searching.
+ * `threadFor` and `replyFor` answer the two queries the drain pass uses. Left
+ * out, a thread reads as having no comment connection at all, which is how the
+ * search tests stay about searching.
  */
-function searchDouble(pagesFor, threadFor) {
+function searchDouble(pagesFor, threadFor, replyFor) {
   const queries = [];
   globalThis.fetch = async (url, init) => {
     if (String(url).includes('access_tokens')) {
@@ -34,6 +34,10 @@ function searchDouble(pagesFor, threadFor) {
         { status: 201, headers: { 'content-type': 'application/json' } });
     }
     const { query, variables } = JSON.parse(init.body);
+    if (/on DiscussionComment/.test(query)) {
+      const replies = replyFor ? replyFor(variables) : null;
+      return json({ data: { node: replies ? { replies } : null } });
+    }
     if (/node\(id:/.test(query)) {
       const comments = threadFor ? threadFor(variables) : null;
       return json({ data: { node: comments ? { __typename: 'Discussion', comments } : null } });
@@ -284,6 +288,53 @@ test('the drain fetches the comment tail the sweep skipped', async () => {
   const stored = env.raw.prepare('SELECT gh_id FROM comments ORDER BY gh_id').all();
   assert.deepEqual(stored.map((r) => r.gh_id), [1, 2, ...tail].map((n) => `C_${n}`),
     'a comment that arrived between two polls is not lost to the next tail read');
+});
+
+test('a reply tail longer than one page is paged, not refetched', async () => {
+  const env = makeEnv(APP);
+  const parent = {
+    ...comment('C_1', '2026-06-01T01:00:00Z'),
+    replies: { totalCount: 3, pageInfo: { hasNextPage: false }, nodes: [] },
+  };
+
+  // 250 replies under one comment: more than a single reply page holds, so the
+  // drain has to carry a cursor for the parent as well as for the thread.
+  const reply = (n) => comment(`R_${n}`, '2026-06-01T02:00:00Z');
+  const pages = {
+    null: { nodes: [reply(1)], pageInfo: { hasNextPage: true, endCursor: 'r1' } },
+    r1: { nodes: [reply(2)], pageInfo: { hasNextPage: true, endCursor: 'r2' } },
+    r2: { nodes: [reply(3)], pageInfo: { hasNextPage: false, endCursor: null } },
+  };
+  const asked = [];
+
+  searchDouble(
+    () => ({
+      issueCount: 1,
+      nodes: [{ ...node(1, '2026-06-01T12:00:00Z'), comments: { totalCount: 1, nodes: [parent] } }],
+      hasNextPage: false,
+    }),
+    () => ({
+      totalCount: 1,
+      pageInfo: { hasNextPage: false, endCursor: null },
+      nodes: [{
+        ...comment('C_1', '2026-06-01T01:00:00Z'),
+        replies: { totalCount: 3, pageInfo: { hasNextPage: true, endCursor: null }, nodes: [] },
+      }],
+    }),
+    ({ after }) => { asked.push(after); return pages[after ?? 'null']; },
+  );
+
+  // First run pages the thread and starts the reply tail; later runs continue
+  // from the parent's own cursor instead of asking for page one again.
+  let report;
+  for (let run = 0; run < 4; run++) report = await ingestOnce(env, {});
+
+  assert.deepEqual(asked.slice(0, 3), [null, 'r1', 'r2'],
+    'each run must continue the reply tail rather than refetch its first page');
+  assert.equal(report.comments_missing, 0, 'and the gap closes once the tail is in');
+
+  const stored = env.raw.prepare("SELECT gh_id FROM comments WHERE parent_gh_id='C_1' ORDER BY gh_id").all();
+  assert.deepEqual(stored.map((r) => r.gh_id), ['R_1', 'R_2', 'R_3']);
 });
 
 test('discussion replies count toward the thread total', async () => {

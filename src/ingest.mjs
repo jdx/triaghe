@@ -115,8 +115,29 @@ query($id: ID!, $after: String) {
         totalCount pageInfo { hasNextPage endCursor }
         nodes {
           ${COMMENT_FIELDS}
-          replies(first: 100) { totalCount nodes { ${COMMENT_FIELDS} } }
+          replies(first: 100) {
+            totalCount pageInfo { hasNextPage endCursor } nodes { ${COMMENT_FIELDS} }
+          }
         }
+      }
+    }
+  }
+}`;
+
+/**
+ * The replies of one discussion comment, paged.
+ *
+ * A reply connection is bounded like any other, so a comment with more replies
+ * than one page holds needs its own cursor. Without it the drain refetches the
+ * same first page every run: the thread's gap never closes, and it keeps
+ * spending the drain budget that other incomplete threads are waiting for.
+ */
+const REPLY_QUERY = `
+query($id: ID!, $after: String) {
+  node(id: $id) {
+    ... on DiscussionComment {
+      replies(first: 100, after: $after) {
+        pageInfo { hasNextPage endCursor } nodes { ${COMMENT_FIELDS} }
       }
     }
   }
@@ -508,11 +529,11 @@ async function persist(env, nodes) {
  * the next poll reads the same tail from a newer end. Nothing errored, and the
  * feed — documented as containing every comment — quietly did not.
  *
- * This pass takes the threads with the largest known gap and pages their
- * comment connection to the end, a few threads per run. Storage is keyed on
- * GitHub's node id and upserted, so re-reading is free and a partial drain is
- * just a pause: the cursor is kept and the gap stays visible until the thread
- * is actually whole.
+ * This pass takes the threads with the largest known gap and pages them to the
+ * end, a few threads per run, spending its budget on comment pages and reply
+ * pages alike. Storage is keyed on GitHub's node id and upserted, so re-reading
+ * is free and a partial drain is just a pause: every cursor is kept and the gap
+ * stays visible until the thread is actually whole.
  */
 async function drainThreads(env, report) {
   const owner = ownerLogin(env);
@@ -527,48 +548,80 @@ async function drainThreads(env, report) {
 
   for (const item of gapped) {
     const key = `thread:${item.id}`;
-    const saved = safeJson(await getMeta(env, key));
-    let after = saved?.after ?? null;
-    // Replies belong to individual parents, so they can only be tallied as they
-    // are read and have to survive a paused drain. The top-level total is a
-    // property of the thread and arrives whole on every page.
-    let replies = saved?.replies ?? 0;
-    let topTotal = 0;
-    let complete = false;
-    let unreachable = false;
-    const stmts = [];
+    const saved = safeJson(await getMeta(env, key)) ?? {};
+    const state = {
+      // Where comment paging stopped, and whether it finished at all.
+      after: saved.after ?? null,
+      commentsDone: saved.commentsDone ?? false,
+      // The thread's top-level total arrives whole on any comment page, but a
+      // run that only pages replies never sees one, so it is carried too.
+      topTotal: saved.topTotal ?? 0,
+      // Replies are counted per parent as parents are read, so this has to
+      // survive a paused drain rather than be recomputed from nothing.
+      replies: saved.replies ?? 0,
+      // Parents whose own reply connection is not exhausted, each with its
+      // cursor.
+      pending: saved.pending ?? [],
+    };
 
-    for (let page = 0; page < DRAIN_PAGES; page++) {
-      const data = await graphql(env, THREAD_QUERY, { id: item.node_id, after });
+    const stmts = [];
+    let budget = DRAIN_PAGES;
+    let unreachable = false;
+
+    // Replies first. A parent with an unread reply tail is what keeps a thread
+    // in the queue, so leaving it until after the comment pages means a thread
+    // that has both can starve on the reply half indefinitely.
+    while (budget > 0 && state.pending.length) {
+      const parent = state.pending[0];
+      const data = await graphql(env, REPLY_QUERY, { id: parent.id, after: parent.after });
+      budget--;
+      const conn = data.node?.replies;
+      if (!conn) { state.pending.shift(); continue; }
+      for (const r of conn.nodes ?? []) {
+        if (r?.id) stmts.push(bindComment(upComment, { ...r, parentId: parent.id }, item.id, owner, now));
+      }
+      if (conn.pageInfo?.hasNextPage) parent.after = conn.pageInfo.endCursor;
+      else state.pending.shift();
+    }
+
+    while (budget > 0 && !state.commentsDone) {
+      const data = await graphql(env, THREAD_QUERY, { id: item.node_id, after: state.after });
+      budget--;
       const conn = data.node?.comments;
       // A node that no longer exposes comments — deleted, transferred, or a
       // kind this query has no fragment for — is a gap that can never be
       // closed. Zero it rather than let the drain pick the same thread every
       // run forever, and record nothing as missing, because nothing is.
-      if (!conn) { complete = true; unreachable = true; after = null; break; }
-      topTotal = conn.totalCount ?? 0;
+      if (!conn) { unreachable = true; state.commentsDone = true; state.after = null; break; }
+      state.topTotal = conn.totalCount ?? 0;
       for (const c of conn.nodes ?? []) {
         if (!c?.id) continue;
         stmts.push(bindComment(upComment, c, item.id, owner, now));
-        replies += c.replies?.totalCount ?? 0;
+        state.replies += c.replies?.totalCount ?? 0;
         for (const r of c.replies?.nodes ?? []) {
           if (r?.id) stmts.push(bindComment(upComment, { ...r, parentId: c.id }, item.id, owner, now));
         }
+        if (c.replies?.pageInfo?.hasNextPage) {
+          state.pending.push({ id: c.id, after: c.replies.pageInfo.endCursor });
+        }
       }
-      if (!conn.pageInfo?.hasNextPage) { complete = true; after = null; break; }
-      after = conn.pageInfo.endCursor;
+      if (conn.pageInfo?.hasNextPage) state.after = conn.pageInfo.endCursor;
+      else { state.commentsDone = true; state.after = null; }
     }
 
+    const complete = state.commentsDone && !state.pending.length;
     report.drained += stmts.length;
-    // The expected total is only trustworthy once every parent has been read,
-    // so the gap is recomputed at the end of a drain and left alone until then.
+    // The expected total is only trustworthy once every parent and every reply
+    // has been read, so the gap is set at the end of a drain and left alone
+    // until then.
     if (unreachable) {
       stmts.push(env.DB.prepare('UPDATE items SET comment_gap = 0 WHERE id = ?').bind(item.id));
     } else if (complete) {
-      stmts.push(setGap.bind(topTotal + replies, topTotal + replies, item.id));
+      const total = state.topTotal + state.replies;
+      stmts.push(setGap.bind(total, total, item.id));
     }
     await runBatched(env, stmts);
-    await setMeta(env, key, complete ? '' : JSON.stringify({ after, replies }));
+    await setMeta(env, key, complete ? '' : JSON.stringify(state));
 
     if (!complete) report.threads_draining++;
   }

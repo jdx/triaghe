@@ -9,7 +9,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { makeEnv, owner, seedItem } from './d1.mjs';
 import { handleApi } from '../src/api.mjs';
-import { mentionsOwner } from '../src/config.mjs';
+import { isBot, isHumanMention, mentionsOwner } from '../src/config.mjs';
 
 const call = (env, path) =>
   handleApi(new Request(`https://x.test${path}`), env, {}, owner);
@@ -93,4 +93,20 @@ test('ignored is rejected without dismissing the mention', async () => {
   const list = await call(env, '/api/items?state=all&mentions=1');
   assert.equal(list.body.items.length, 1);
   assert.equal(list.body.items[0].outcome, null);
+});
+
+test('the board\'s own agent is machinery, not a person', () => {
+  // jdxbot opens the PRs on this repo and answers review threads on them. Its
+  // replies were registering as inbound human activity, and a `@jdx` inside one
+  // reached the mention band — the single signal promoted above everything
+  // else. A machine account is a plain User to GraphQL, so only the login list
+  // can catch it.
+  assert.equal(isBot('jdxbot', 'User'), true);
+  assert.equal(isBot('JDXBot', 'User'), true, 'GitHub logins are case-insensitive');
+  assert.equal(isHumanMention('jdxbot', 'User', 'fixed in abc123, @jdx', 'jdx'), false);
+
+  // The guard in the other direction: a person whose login merely starts the
+  // same way is not the agent.
+  assert.equal(isBot('jdxbotanist', 'User'), false);
+  assert.equal(isHumanMention('jdxbotanist', 'User', 'hey @jdx', 'jdx'), true);
 });

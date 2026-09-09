@@ -98,13 +98,34 @@ test('a snooze outranks reactivation until it expires', () => {
   assert.equal(computeState(item, { snoozed_until: past }).state, 'needs_you');
 });
 
-test('bot activity on a closed thread still reopens it, and reads as automated', () => {
+test('bot activity on a closed thread does not reopen it', () => {
+  // This assertion is the reverse of what it used to be, deliberately.
+  //
+  // Reopening on any activity was defensible in the abstract and wrong in
+  // practice: a merged PR attracts CI results and review-bot summaries for
+  // hours afterwards. Measured on the live board, a merged PR was sitting in
+  // the inbox reading "coderabbitai commented after it was merged". A merged PR
+  // that CodeRabbit commented on is finished.
   const item = closed('2026-06-02T00:00:00Z', {
     last_human_at: null,
     last_human_actor: null,
     last_actor: 'renovate',
   });
   const s = computeState(item, null);
+  assert.equal(s.state, 'done');
+  assert.match(s.reason, /closed on github/);
+});
+
+test('a person on a closed thread still reopens it, even after a bot spoke later', () => {
+  // The half that must not regress with the change above: the bot being the
+  // most recent actor cannot mask the person underneath it.
+  const item = closed('2026-06-02T00:00:00Z', {
+    last_human_at: '2026-06-02T00:00:00Z',
+    last_human_actor: 'alice',
+    last_actor: 'github-actions',
+    last_actor_at: '2026-06-03T00:00:00Z',
+  });
+  const s = computeState(item, null);
   assert.equal(s.state, 'needs_you');
-  assert.match(s.reason, /renovate/);
+  assert.match(s.reason, /alice/);
 });

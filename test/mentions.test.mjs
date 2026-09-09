@@ -110,3 +110,26 @@ test('the board\'s own agent is machinery, not a person', () => {
   assert.equal(isBot('jdxbotanist', 'User'), false);
   assert.equal(isHumanMention('jdxbotanist', 'User', 'hey @jdx', 'jdx'), true);
 });
+
+test('a person is never classified as a bot for naming themselves one', () => {
+  // `[bot]` is structural — GitHub disallows brackets in a username, so only an
+  // App can wear it. `-bot` is a convention anyone may adopt, and guessing from
+  // it now decides whether somebody can reach the owner at all: automation
+  // cannot undo a mark, reopen a resolved thread, or stay out of Chores.
+  assert.equal(isBot('someone[bot]', 'User'), true, 'a person cannot hold this login');
+  assert.equal(isBot('cool-bot', 'User'), false, 'but anyone may call themselves one');
+
+  // The accounts that matter are named, not guessed at.
+  assert.equal(isBot('renovate-bot', 'User'), true);
+  assert.equal(isBot('snyk-bot', 'User'), true);
+
+  // And the reliable signal is untouched: GraphQL reporting an App.
+  assert.equal(isBot('anything', 'Bot'), true);
+  assert.equal(isBot('anything', 'Mannequin'), true);
+});
+
+test('a contributor with a bot-shaped login can still reach the owner', () => {
+  // The consequence the classification actually has, rather than the label.
+  assert.equal(isHumanMention('cool-bot', 'User', 'hey @jdx', 'jdx'), true);
+  assert.equal(isHumanMention('renovate-bot', 'User', 'released by @jdx', 'jdx'), false);
+});

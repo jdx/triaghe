@@ -31,10 +31,16 @@ const TRIAGE_COLUMNS = `
  * Exactly what computeState reads, and nothing else. /api/stats runs on every
  * board refresh alongside /api/items; selecting the full LIST_COLUMNS here made
  * the cheapest request in the app scan the same width as the most expensive one.
+ *
+ * Keep this in step with computeState. Release detection added `kind`, `title`,
+ * `labels` and `author_is_bot`; without them stats silently counted release PRs
+ * as inbox while /api/items filed them under Releases, and the badge disagreed
+ * with the list it was counting.
  */
 const STATE_COLUMNS = `
   i.state, i.is_answered, i.resolved_at, i.last_actor, i.last_actor_at,
   i.last_owner_at, i.last_human_at, i.last_human_actor, i.last_mention_at,
+  i.kind, i.title, i.labels, i.author, i.author_is_bot,
   t.outcome, t.marked_at_activity, t.snoozed_until`;
 
 const PENDING_DRAFTS =

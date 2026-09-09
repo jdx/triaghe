@@ -14,6 +14,16 @@ compatibility_flags = ["nodejs_compat"]
 workers_dev = false
 preview_urls = false
 
+# The route the Access application sits in front of. Declared here rather than
+# left to the dashboard because deploys are automated: a route that exists only
+# as a console setting is one `wrangler deploy` away from being dropped, and
+# dropping it takes the board offline silently.
+#
+# Inline rather than a [[routes]] table: a table header would capture every
+# top-level key written after it — `assets` included — which is a TOML scoping
+# trap, not a wrangler one.
+routes = [{ pattern = "inbox.jdx.dev", custom_domain = true }]
+
 # Static board. run_worker_first so every response — asset or API — goes through
 # the Worker and picks up the same CSP and cache headers. At this traffic level
 # the extra invocation costs nothing and having one place that sets security
@@ -38,8 +48,8 @@ TRIAGHE_SCOPE = "user:jdx"
 # Cloudflare Access. TEAM_DOMAIN is <team>.cloudflareaccess.com; ACCESS_AUD is
 # the Application Audience tag of the Access app in front of this Worker.
 # Both are public identifiers, not secrets.
-ACCESS_TEAM_DOMAIN = "PLACEHOLDER.cloudflareaccess.com"
-ACCESS_AUD = "PLACEHOLDER_ACCESS_AUD_TAG"
+ACCESS_TEAM_DOMAIN = "noisy-shadow-bb87.cloudflareaccess.com"
+ACCESS_AUD = "d267e3c667b289cf100d032a9982883f718ef8fb25bbedf4a74b422d751cd882"
 
 # Secrets (set with `wrangler secret put`, never in this file):
 #   GITHUB_APP_ID

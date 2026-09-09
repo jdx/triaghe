@@ -29,7 +29,14 @@ header {
   border-bottom: 1px solid var(--line);
   position: sticky; top: 0; z-index: 5;
 }
-header h1 { font-size: 14px; margin: 0; font-family: var(--mono); color: var(--accent); }
+/* The mark ships its own fills — the same --warn/--accent/--ok the kind labels
+   use — so it is deliberately not tinted to currentColor here. Its box is sized
+   in the markup too, because cache-control is no-store for every asset, so the
+   icon is refetched on each load and an unsized <img> would jog the header. */
+header h1 {
+  display: flex; align-items: center; gap: 7px;
+  font-size: 14px; margin: 0; font-family: var(--mono); color: var(--accent);
+}
 #tabs { display: flex; gap: 4px; flex: 1; flex-wrap: wrap; }
 .tab {
   display: flex; align-items: center; gap: 6px;

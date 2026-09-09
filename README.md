@@ -39,7 +39,7 @@ Computed in `src/state.mjs` — pure, deterministic, no model.
 | `needs_you` | something arrived from outside more recently than you replied |
 | `awaiting_them` | you spoke last |
 | `done` | closed, answered, or marked by you/jdx-bot — until someone comments after it was resolved |
-| `release` | a release cut — off the board entirely, reachable at `?state=release` |
+| `release` | a release cut nobody is waiting on — no tab, reachable at `?state=release` |
 | `chore` | opened by automation — dependency bumps and the like |
 | `draft` | somebody else's draft: the author has said it is not ready |
 | `snoozed` | hidden until a date |
@@ -48,11 +48,12 @@ Computed in `src/state.mjs` — pure, deterministic, no model.
 button. It asserts nothing about why, and like every other outcome it lasts
 until a *person* turns up, which is what separates it from an ignore.
 
-`chore` and `draft` yield when somebody is actually waiting, so neither can
-hide a request. **`release` does not**, and has no tab: the owner asked not to
-see release PRs at all. The consequence is deliberate and worth knowing — a
-comment or an `@mention` on a release PR reaches the feed but not the inbox or
-the Mentions badge, since both require `needs_you`. `draft` yields only to an outstanding mention
+`release`, `chore` and `draft` all yield when somebody is actually waiting, so
+none of them can hide a request. For `release` that exception is the only way
+back onto the board: it has no tab, because with the exception in place the lane
+holds only work nobody is waiting on, and a badge counting that is a badge worth
+ignoring. A person commenting on a release cut puts it in the inbox reading as
+their comment; CI output and review bots leave it where it is. `draft` yields only to an outstanding mention
 rather than to any comment: being tagged is a request, a comment on a draft is
 work in progress out loud.
 

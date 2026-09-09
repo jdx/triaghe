@@ -103,17 +103,9 @@ test('a snooze still wins over the release lane', () => {
   assert.equal(s.state, 'snoozed');
 });
 
-test('nothing puts a release PR back in the inbox, not even a person', () => {
-  // The reverse of what this asserted before, on the owner's explicit
-  // instruction — given three times and escalating — that they do not want to
-  // see release PRs at all.
-  //
-  // The cost is real and is recorded here rather than in a commit message
-  // nobody will read again: a contributor commenting "this bump breaks the
-  // macOS build", or tagging the owner directly, will not reach the inbox or
-  // the Mentions badge, because both require `needs_you`. The feed still shows
-  // it. Restoring the old behaviour is `&& !personWaiting` on one line of
-  // computeState.
+test('a person commenting on a release PR is the one thing that surfaces it', () => {
+  // The single exception, and the reason the lane is otherwise absolute: a
+  // release cut is a chore right up to the moment somebody turns up on it.
   const asked = openPr({
     labels: '["release"]',
     last_actor: 'alice',
@@ -124,7 +116,9 @@ test('nothing puts a release PR back in the inbox, not even a person', () => {
     last_mention_at: '2026-06-02T00:00:00Z',
     last_mention_actor: 'alice',
   });
-  assert.equal(computeState(asked, null).state, 'release');
+  const s = computeState(asked, null);
+  assert.equal(s.state, 'needs_you');
+  assert.match(s.reason, /alice/, 'and it reads as her comment, not as a release');
 });
 
 test('a release PR the owner already answered goes back to being a chore', () => {
@@ -177,7 +171,7 @@ test('a contributor writing about a release is not filed away', () => {
   assert.equal(computeState(theirs, null, 'jdx').state, 'needs_you');
 });
 
-test('the same holds for a release the owner cut themselves', () => {
+test('the same exception applies to a release the owner cut themselves', () => {
   const asked = openPr({
     author: 'jdx',
     author_is_bot: 0,
@@ -186,5 +180,31 @@ test('the same holds for a release the owner cut themselves', () => {
     last_human_at: '2026-06-02T00:00:00Z',
     last_human_actor: 'alice',
   });
-  assert.equal(computeState(asked, null, 'jdx').state, 'release');
+  const s = computeState(asked, null, 'jdx');
+  assert.equal(s.state, 'needs_you');
+  assert.match(s.reason, /alice/);
+});
+
+test('only a person counts: CI and review bots leave a release alone', () => {
+  // Socket, Greptile and CodeRabbit comment on release PRs constantly. If any
+  // of them qualified, the exception would swallow the rule.
+  for (const bot of ['socket-security', 'greptile-apps', 'github-actions', 'coderabbitai']) {
+    const noisy = openPr({
+      labels: '["release"]',
+      last_actor: bot,
+      last_actor_at: '2026-06-05T00:00:00Z',
+      last_actor_is_bot: 1,
+    });
+    assert.equal(computeState(noisy, null).state, 'release', `${bot} must not surface it`);
+  }
+});
+
+test('once the owner has answered, a release settles back into the lane', () => {
+  const answered = openPr({
+    labels: '["release"]',
+    last_human_at: '2026-06-02T00:00:00Z',
+    last_human_actor: 'alice',
+    last_owner_at: '2026-06-03T00:00:00Z',
+  });
+  assert.equal(computeState(answered, null).state, 'release');
 });

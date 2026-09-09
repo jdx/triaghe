@@ -138,22 +138,24 @@ export function computeState(item, triage, owner) {
     return { state: 'draft', reason: `draft by ${item.author} — not ready yet` };
   }
 
-  // Releases leave the board, unconditionally.
+  // Releases leave the board unless a person turns up on one.
   //
   // Checked before anything about who opened them, because most cuts on these
   // repositories are made by hand rather than by a release bot, and the owner
   // rule would otherwise claim every one of them. What makes something a
   // release is what it is, not whose name is on it.
   //
-  // And with no `!personWaiting` exception, which every other lane has. That is
-  // a deliberate instruction from the owner, given three times and escalating,
-  // so it is not an oversight to be tidied up later — but it does have a cost
-  // worth stating plainly: a contributor who comments "this bump breaks the
-  // macOS build", or who tags the owner directly, on a release PR will not
-  // reach the inbox or the Mentions badge, because both require `needs_you`.
-  // The feed still shows it. Restoring the exception is adding `&&
-  // !personWaiting` back to this line.
-  if (isReleasePr(item, owner)) {
+  // A release cut is a chore right up to the moment somebody comments on it —
+  // "this bump breaks the macOS build", "hold this until #400 lands" — and that
+  // is the whole of what `personWaiting` means: a non-owner, non-bot comment
+  // more recent than the owner's own last word. So CI output, Socket reports
+  // and review-bot summaries leave it in the lane, a person does not, and once
+  // the owner has answered them it settles back.
+  //
+  // There is no Releases tab. That is deliberate: with this exception in place
+  // the lane holds only things nobody is waiting on, so a tab would be a badge
+  // counting work that never needs attention. `?state=release` still lists them.
+  if (isReleasePr(item, owner) && !personWaiting) {
     return { state: 'release', reason: `release cut by ${item.author} — merge to ship` };
   }
 

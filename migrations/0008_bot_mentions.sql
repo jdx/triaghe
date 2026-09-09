@@ -46,9 +46,27 @@ SET last_mention_at = (
       )
     ),
     last_mention_actor = NULL
+-- Three ways to recognise a bot, because a login is the weakest of them.
+--
+-- `isBot` in src/config.mjs treats GraphQL's `Bot` and `Mannequin` author types
+-- as bots regardless of login, and plenty of those logins match none of the
+-- suffixes or the hard-coded list — a GitHub App named `acme-ci` is a `Bot` to
+-- the API and an ordinary word here. Ingest already resolved that question and
+-- wrote the answer to `author_is_bot`, so prefer the stored classification and
+-- keep the login patterns only as a fallback for actors whose comment has since
+-- aged out of the tail.
 WHERE last_mention_actor IS NOT NULL
   AND (
-    LOWER(last_mention_actor) LIKE '%[bot]'
+    -- The stored answer for a comment by this actor on this item.
+    EXISTS (
+      SELECT 1 FROM comments c
+       WHERE c.item_id = items.id
+         AND c.author = items.last_mention_actor
+         AND c.author_is_bot = 1
+    )
+    -- The same, for a mention that came from the opening post.
+    OR (items.author_is_bot = 1 AND items.last_mention_actor = items.author)
+    OR LOWER(last_mention_actor) LIKE '%[bot]'
     OR LOWER(last_mention_actor) LIKE '%-bot'
     OR LOWER(last_mention_actor) IN (
       'renovate', 'renovate-bot', 'dependabot', 'github-actions', 'codecov',

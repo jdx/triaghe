@@ -149,3 +149,62 @@ test('a genuine human mention is left completely alone', () => {
   assert.equal(row.last_mention_at, '2026-02-01T00:00:00Z');
   assert.equal(row.last_mention_actor, 'alice');
 });
+
+test('a bot GitHub only knows by type is caught too', () => {
+  const db = beforeMigration();
+  // `acme-ci` matches no suffix and is on no list. GraphQL reported it as a Bot,
+  // ingest recorded that in author_is_bot, and a login-only scope test would
+  // have walked straight past it — leaving a stale bot mention on a merged PR
+  // that is never re-ingested.
+  const id = seedItem(db, {
+    last_mention_at: '2026-02-02T00:00:00Z',
+    last_mention_actor: 'acme-ci',
+  });
+  seedComment(db, id, { gh_id: 'C_1', author: 'alice', author_is_bot: 0, created_at: '2026-02-01T00:00:00Z' });
+  seedComment(db, id, { gh_id: 'C_2', author: 'acme-ci', author_is_bot: 1, created_at: '2026-02-02T00:00:00Z' });
+
+  db.exec(M0008);
+
+  const row = item(db);
+  assert.equal(row.last_mention_actor, 'alice', 'the human underneath is restored');
+  assert.equal(row.last_mention_at, '2026-02-01T00:00:00Z');
+});
+
+test('a type-only bot opening post is caught too', () => {
+  const db = beforeMigration();
+  seedItem(db, {
+    author: 'acme-ci',
+    author_is_bot: 1,
+    body_mentions_owner: 1,
+    last_mention_at: '2026-01-01T00:00:00Z',
+    last_mention_actor: 'acme-ci',
+  });
+
+  db.exec(M0008);
+
+  const row = item(db);
+  assert.equal(row.last_mention_at, null, 'no evidence survives, so it clears');
+  assert.equal(row.last_mention_actor, null);
+  assert.equal(row.body_mentions_owner, 0);
+});
+
+test('a real person is never mistaken for a bot', () => {
+  const db = beforeMigration();
+  // The guard that matters in the other direction: this must not widen into
+  // "clear anything we are unsure about".
+  const id = seedItem(db, {
+    author: 'alice',
+    author_is_bot: 0,
+    last_mention_at: '2026-02-02T00:00:00Z',
+    last_mention_actor: 'robot-enthusiast',
+  });
+  seedComment(db, id, {
+    gh_id: 'C_1', author: 'robot-enthusiast', author_is_bot: 0, created_at: '2026-02-02T00:00:00Z',
+  });
+
+  db.exec(M0008);
+
+  const row = item(db);
+  assert.equal(row.last_mention_actor, 'robot-enthusiast', 'left exactly as it was');
+  assert.equal(row.last_mention_at, '2026-02-02T00:00:00Z');
+});

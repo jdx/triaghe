@@ -138,13 +138,22 @@ export function computeState(item, triage, owner) {
     return { state: 'draft', reason: `draft by ${item.author} — not ready yet` };
   }
 
-  // Releases are checked before anything about who opened them.
+  // Releases leave the board, unconditionally.
   //
-  // Most release cuts on these repositories are opened by the owner rather than
-  // by a release bot, so running the owner rule first put every one of them
-  // back in the inbox — which is the exact thing the lane was added to stop.
-  // What makes something a release is what it is, not whose name is on it.
-  if (isReleasePr(item, owner) && !personWaiting) {
+  // Checked before anything about who opened them, because most cuts on these
+  // repositories are made by hand rather than by a release bot, and the owner
+  // rule would otherwise claim every one of them. What makes something a
+  // release is what it is, not whose name is on it.
+  //
+  // And with no `!personWaiting` exception, which every other lane has. That is
+  // a deliberate instruction from the owner, given three times and escalating,
+  // so it is not an oversight to be tidied up later — but it does have a cost
+  // worth stating plainly: a contributor who comments "this bump breaks the
+  // macOS build", or who tags the owner directly, on a release PR will not
+  // reach the inbox or the Mentions badge, because both require `needs_you`.
+  // The feed still shows it. Restoring the exception is adding `&&
+  // !personWaiting` back to this line.
+  if (isReleasePr(item, owner)) {
     return { state: 'release', reason: `release cut by ${item.author} — merge to ship` };
   }
 

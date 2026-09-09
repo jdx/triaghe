@@ -103,11 +103,17 @@ test('a snooze still wins over the release lane', () => {
   assert.equal(s.state, 'snoozed');
 });
 
-test('a person commenting on a release PR puts it back in the inbox', () => {
-  // A release cut is a chore right up until somebody turns up on it. Both the
-  // Mentions filter and the badge require `needs_you`, so an unconditional
-  // release lane would have made tagging the owner on a release PR the one
-  // reliable way to render a direct request invisible.
+test('nothing puts a release PR back in the inbox, not even a person', () => {
+  // The reverse of what this asserted before, on the owner's explicit
+  // instruction — given three times and escalating — that they do not want to
+  // see release PRs at all.
+  //
+  // The cost is real and is recorded here rather than in a commit message
+  // nobody will read again: a contributor commenting "this bump breaks the
+  // macOS build", or tagging the owner directly, will not reach the inbox or
+  // the Mentions badge, because both require `needs_you`. The feed still shows
+  // it. Restoring the old behaviour is `&& !personWaiting` on one line of
+  // computeState.
   const asked = openPr({
     labels: '["release"]',
     last_actor: 'alice',
@@ -118,9 +124,7 @@ test('a person commenting on a release PR puts it back in the inbox', () => {
     last_mention_at: '2026-06-02T00:00:00Z',
     last_mention_actor: 'alice',
   });
-  const s = computeState(asked, null);
-  assert.equal(s.state, 'needs_you', 'a person waiting outranks the release lane');
-  assert.match(s.reason, /alice/, 'and the reason names them, not the release');
+  assert.equal(computeState(asked, null).state, 'release');
 });
 
 test('a release PR the owner already answered goes back to being a chore', () => {
@@ -173,7 +177,7 @@ test('a contributor writing about a release is not filed away', () => {
   assert.equal(computeState(theirs, null, 'jdx').state, 'needs_you');
 });
 
-test('a person waiting still outranks the owner\'s own release', () => {
+test('the same holds for a release the owner cut themselves', () => {
   const asked = openPr({
     author: 'jdx',
     author_is_bot: 0,
@@ -182,7 +186,5 @@ test('a person waiting still outranks the owner\'s own release', () => {
     last_human_at: '2026-06-02T00:00:00Z',
     last_human_actor: 'alice',
   });
-  const s = computeState(asked, null, 'jdx');
-  assert.equal(s.state, 'needs_you');
-  assert.match(s.reason, /alice/);
+  assert.equal(computeState(asked, null, 'jdx').state, 'release');
 });

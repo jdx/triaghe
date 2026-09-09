@@ -40,11 +40,13 @@ const state = {
   draftEdits: new Map(),
 };
 
+// No Releases tab: the owner asked not to see release PRs at all, not merely
+// to have them out of the inbox. The state still exists and `?state=release`
+// still lists them, so nothing is lost — it is off the navigation, not deleted.
 const TABS = [
   ['needs_you', 'Inbox'],
   ['mentions', 'Mentions'],
   ['awaiting_them', 'Waiting'],
-  ['release', 'Releases'],
   ['chore', 'Chores'],
   ['draft', 'Drafts'],
   ['snoozed', 'Snoozed'],

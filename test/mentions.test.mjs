@@ -46,11 +46,11 @@ test('an outstanding mention appears in the Mentions list and the badge', async 
   assert.equal(stats.body.mentions, 1);
 });
 
-test('ignoring a mention removes it from the list, not just the badge', async () => {
+test('marking a mention responded removes it from the list, not just the badge', async () => {
   const env = makeEnv();
   const id = seedMention(env);
 
-  await post(env, `/api/items/${encodeURIComponent(id)}/mark`, { outcome: 'ignored' });
+  await post(env, `/api/items/${encodeURIComponent(id)}/mark`, { outcome: 'responded' });
 
   const stats = await call(env, '/api/stats');
   const list = await call(env, '/api/items?state=all&mentions=1');
@@ -83,4 +83,14 @@ test('an opening post without a mention stays out of the mentions feed', async (
   seedMention(env, { body_mentions_owner: 0 });
   const feed = await call(env, '/api/feed?mentions=1');
   assert.equal(feed.body.events.length, 0);
+});
+
+test('ignored is rejected without dismissing the mention', async () => {
+  const env = makeEnv();
+  const id = seedMention(env);
+  const result = await post(env, `/api/items/${encodeURIComponent(id)}/mark`, { outcome: 'ignored' });
+  assert.equal(result.status, 400);
+  const list = await call(env, '/api/items?state=all&mentions=1');
+  assert.equal(list.body.items.length, 1);
+  assert.equal(list.body.items[0].outcome, null);
 });

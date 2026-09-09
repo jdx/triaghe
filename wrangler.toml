@@ -14,15 +14,8 @@ compatibility_flags = ["nodejs_compat"]
 workers_dev = false
 preview_urls = false
 
-# The route the Access application sits in front of. Declared here rather than
-# left to the dashboard because deploys are automated: a route that exists only
-# as a console setting is one `wrangler deploy` away from being dropped, and
-# dropping it takes the board offline silently.
-#
-# Inline rather than a [[routes]] table: a table header would capture every
-# top-level key written after it — `assets` included — which is a TOML scoping
-# trap, not a wrangler one.
-routes = [{ pattern = "inbox.jdx.dev", custom_domain = true }]
+# inbox.jdx.dev is managed in the Cloudflare dashboard. Omit route/routes here
+# so deployments do not require zone-level route permissions.
 
 # Static board. run_worker_first so every response — asset or API — goes through
 # the Worker and picks up the same CSP and cache headers. At this traffic level

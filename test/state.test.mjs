@@ -82,7 +82,7 @@ test('a resolved thread with no resolution timestamp stays done', () => {
 
 test('a mark sticks until activity lands after it', () => {
   const item = closed('2026-06-02T00:00:00Z');
-  const marked = { outcome: 'ignored', marked_at_activity: '2026-06-02T00:00:00Z' };
+  const marked = { outcome: 'responded', marked_at_activity: '2026-06-02T00:00:00Z' };
   assert.equal(computeState(item, marked).state, 'done');
 
   const later = closed('2026-06-05T00:00:00Z');

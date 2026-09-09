@@ -329,7 +329,7 @@ three months and dying against the CPU limit.
 ## Keyboard
 
 `j`/`k` move · `enter` detail · `o` open on GitHub · `r` responded · `p` PR opened
-· `x` ignore · `s` snooze 7d · `u` undo · `/` search
+· `s` snooze 7d · `u` undo · `/` search
 
 ## What happened to the node prototype
 

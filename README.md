@@ -226,6 +226,11 @@ The `.pem` GitHub gives you is PKCS#1. WebCrypto only imports PKCS#8, so
 **3. Cloudflare Access** — create a self-hosted application for the hostname
 you will serve the board on.
 
+`wrangler.toml` sets `workers_dev = false` and `preview_urls = false`, so that
+Access hostname is the only route in. Both default to *enabled* when absent,
+which publishes the board on `<name>.<subdomain>.workers.dev` — a hostname the
+Access application does not sit in front of.
+
 - Policy 1, `Allow`: emails ending in your domain, or the single owner email.
 - Policy 2, `Service Auth`: the service token jdx-bot will use.
 - Copy the **Application Audience (AUD)** tag and your team domain into

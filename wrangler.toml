@@ -3,6 +3,17 @@ main = "src/index.mjs"
 compatibility_date = "2026-09-01"
 compatibility_flags = ["nodejs_compat"]
 
+# The Access hostname is the only way in.
+#
+# Both of these default to *enabled* when absent, which is how the first deploy
+# published the board on `triaghe.<subdomain>.workers.dev` — a hostname the
+# Access application does not sit in front of. It failed closed (401, no Access
+# identity), so nothing leaked, but the whole security model is "Access
+# terminates in front of this", and a route that bypasses Access is one config
+# regression away from mattering. Preview URLs are the same hole per deployment.
+workers_dev = false
+preview_urls = false
+
 # Static board. run_worker_first so every response — asset or API — goes through
 # the Worker and picks up the same CSP and cache headers. At this traffic level
 # the extra invocation costs nothing and having one place that sets security

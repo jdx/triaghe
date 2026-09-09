@@ -183,26 +183,36 @@ const REPO_TAIL = /(?:^|[\s([])([A-Za-z\d][\w.-]*\/[\w.-]+)$/;
  * input, and without it `(((((…` merely runs long, but with a cap the scan is
  * bounded by the string it is already walking.
  *
+ * `MAX_DEST` is what keeps the whole parse linear. A failed candidate returns
+ * null and the caller advances one character, so an unbounded scan makes
+ * `[a](<` repeated to fill a body quadratic: every `[` walks the entire
+ * remainder before giving up. Bounding one scan bounds the product. 2 KB is
+ * past any address anyone will paste and far below the point where n·MAX_DEST
+ * is noticeable.
+ *
  * @returns {{ dest: string, end: number } | null} `end` is the index after `)`.
  */
+const MAX_DEST = 2048;
+
 function readDestination(text, start) {
   let i = start;
   while (i < text.length && (text[i] === ' ' || text[i] === '\t')) i++;
 
+  const limit = Math.min(text.length, i + MAX_DEST);
   let dest = '';
   let depth = 0;
 
   // The <...> form takes anything except a newline or an unescaped '>'.
   if (text[i] === '<') {
     i++;
-    while (i < text.length && text[i] !== '>' && text[i] !== '\n') {
-      if (text[i] === '\\' && i + 1 < text.length) { dest += text[++i]; i++; continue; }
+    while (i < limit && text[i] !== '>' && text[i] !== '\n') {
+      if (text[i] === '\\' && i + 1 < limit) { dest += text[++i]; i++; continue; }
       dest += text[i++];
     }
     if (text[i] !== '>') return null;
     i++;
   } else {
-    for (; i < text.length; i++) {
+    for (; i < limit; i++) {
       const c = text[i];
       if (c === '\\' && i + 1 < text.length) { dest += text[++i]; continue; }
       if (c === '(') {
@@ -225,12 +235,15 @@ function readDestination(text, start) {
 
   while (i < text.length && /[ \t]/.test(text[i])) i++;
 
-  // Optional title, in any of the three delimiters CommonMark allows.
+  // Optional title, in any of the three delimiters CommonMark allows. Bounded
+  // for the same reason the destination is: an unclosed quote is the same
+  // quadratic shape as an unclosed angle bracket, just one branch further in.
+  const titleLimit = Math.min(text.length, i + MAX_DEST);
   const open = text[i];
   if (open === '"' || open === "'" || open === '(') {
     const close = open === '(' ? ')' : open;
     i++;
-    while (i < text.length && text[i] !== close) {
+    while (i < titleLimit && text[i] !== close) {
       if (text[i] === '\\') i++;
       i++;
     }

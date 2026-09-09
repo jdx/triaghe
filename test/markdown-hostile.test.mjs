@@ -191,3 +191,34 @@ test('the inline cap degrades to text rather than dropping content', () => {
   assert.match(serialize(render(deep)), /findme/);
 });
 
+
+test('malformed links cannot make parsing quadratic', () => {
+  // A failed candidate advances the scanner by one character, so an unbounded
+  // destination scan means every `[` walks the rest of the body before giving
+  // up. At the 8k ingest limit that is tens of millions of character
+  // inspections on the main thread, every time the item is opened.
+  //
+  // Timing is a blunt instrument for an assertion, but the bound being checked
+  // is three orders of magnitude, not a few percent.
+  const cases = {
+    'unclosed angle bracket': '[a](<'.repeat(1600),
+    'unbalanced paren': '[a](('.repeat(1600),
+    'unclosed title': '[a](x "'.repeat(1100),
+  };
+
+  for (const [name, payload] of Object.entries(cases)) {
+    assert.ok(payload.length > 5000, `${name}: payload should approach the 8k body limit`);
+    const started = Date.now();
+    render(payload);
+    assert.ok(Date.now() - started < 500, `${name}: parsed in bounded time`);
+  }
+});
+
+test('a destination longer than the cap is not a link', () => {
+  // The cap is a parsing bound, not a validator, but it does mean a 3k "URL"
+  // stops being one. Nothing is lost: the text is still shown.
+  const huge = 'https://x.test/' + 'a'.repeat(3000);
+  const out = serialize(render(`[a](${huge})`));
+  assert.doesNotMatch(out, /<a[^>]*>a<\/a>/, 'not rendered as a link');
+  assert.match(out, /aaaa/, 'but the text is still there');
+});

@@ -139,13 +139,45 @@ aside {
 .oc.approve:disabled { opacity: .5; cursor: default; }
 
 .body, .cbody { margin-bottom: 12px; }
-pre.untrusted {
+
+/* Somebody else's words, in a box that says so. Rendered markdown now, but the
+   frame is unchanged from when the body was a <pre>. */
+.untrusted {
   margin: 0 0 8px; padding: 9px 11px; background: var(--panel);
   border: 1px solid var(--line); border-radius: var(--radius);
-  white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere;
-  font-family: var(--mono); font-size: 12px; line-height: 1.55; color: #c3cad9;
+  font-size: 13px; line-height: 1.6; color: #c3cad9;
+  word-break: break-word; overflow-wrap: anywhere;
   max-height: 420px; overflow: auto;
 }
+.untrusted > :first-child { margin-top: 0; }
+.untrusted > :last-child { margin-bottom: 0; }
+.mdp { margin: 0 0 9px; }
+.mdh { margin: 14px 0 6px; font-size: 13px; font-weight: 600; color: var(--text);
+  text-transform: none; letter-spacing: 0; }
+.mdlist { margin: 0 0 9px; padding-left: 22px; }
+.mdlist .mdlist { margin-bottom: 0; }
+.mdlist li { margin: 2px 0; }
+.mdquote {
+  margin: 0 0 9px; padding: 1px 0 1px 10px;
+  border-left: 2px solid var(--line); color: var(--dim);
+}
+.untrusted hr { border: 0; border-top: 1px solid var(--line); margin: 12px 0; }
+.mdcode {
+  margin: 0 0 9px; padding: 8px 10px; background: var(--bg);
+  border: 1px solid var(--line); border-radius: var(--radius);
+  white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere;
+  font-family: var(--mono); font-size: 12px; line-height: 1.5;
+}
+.mdcodespan {
+  font-family: var(--mono); font-size: 12px;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 3px;
+  padding: 0 4px;
+}
+.mdlink { color: var(--accent); }
+/* A link the author wrote as an image. It is not one — see markdown.js — so it
+   is labelled rather than left looking like ordinary link text. */
+.mdlink.img::before { content: "🖼 "; }
+.mdlink.at { font-family: var(--mono); font-size: 12px; }
 
 h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); margin: 18px 0 8px; }
 .comment { border-left: 2px solid var(--line); padding-left: 10px; margin-bottom: 10px; }

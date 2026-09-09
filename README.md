@@ -13,7 +13,8 @@ src/ingest.mjs   GitHub GraphQL -> D1        (no model ever runs here)
 src/access.mjs   Cloudflare Access JWT verification
 src/api.mjs      JSON API
 src/post.mjs     the only code that writes to GitHub
-web/             the board (no innerHTML, strict CSP)
+web/app.js       the board (no innerHTML, strict CSP)
+web/markdown.js  markdown -> DOM nodes, for text written by strangers
 ```
 
 ## Why not something off the shelf
@@ -168,13 +169,25 @@ instruction inside a discussion can reach the write path. The worst a
 fully-injected draft can do is produce text that sat on the board for a human to
 read first.
 
-**5. The browser renders untrusted text as text.** No `innerHTML` anywhere in
-`web/app.js` — every value reaches the DOM via `textContent`. Markdown is *not*
-rendered: bodies display as preformatted text, so no links or images from
-content are ever live. CSP is `default-src 'none'` with same-origin scripts and
-styles, which kills tracking-pixel and beacon exfiltration even if the rendering
-ever regressed. The Worker sets those headers on assets and API responses alike,
-so there is no `_headers` file to drift out of sync.
+**5. The browser builds nodes, never HTML.** No `innerHTML`, `insertAdjacentHTML`
+or any other string-to-markup API exists in `web/` — a test asserts that by
+grepping the sources, because it is the property everything else depends on.
+Every value reaches the DOM via `textContent` or a text node.
+
+Bodies and comments *are* rendered as markdown, by `web/markdown.js`. It parses
+to a plain-data tree and builds elements from that tree, so raw HTML in a body
+is never handed to an HTML parser: `<img onerror=…>` is displayed as those
+characters. Link destinations pass a scheme allowlist (`http`, `https`,
+`mailto`) evaluated after control characters are stripped, so `javascript:`,
+`data:` and `java\nscript:` render as text rather than as a link. Markdown
+images become links, not `<img>`: a remote image in a stranger's issue is a read
+receipt for the maintainer's IP. `test/markdown-hostile.test.mjs` is the payload
+suite.
+
+CSP is unchanged and unweakened — `default-src 'none'` with same-origin scripts
+and styles — which kills tracking-pixel and beacon exfiltration even if the
+rendering ever regressed. The Worker sets those headers on assets and API
+responses alike, so there is no `_headers` file to drift out of sync.
 
 **6. Injection heuristics are a hint, not a boundary.** `src/scan.mjs` flags
 instruction-override phrasing, fake chat delimiters, pipe-to-shell, credential

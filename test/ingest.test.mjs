@@ -28,9 +28,15 @@ function searchDouble(pagesFor) {
     }
     const { variables } = JSON.parse(init.body);
     queries.push(variables.q);
-    const { nodes, hasNextPage } = pagesFor(variables);
+    const { nodes, hasNextPage, issueCount } = pagesFor(variables);
     return new Response(JSON.stringify({
-      data: { search: { pageInfo: { hasNextPage, endCursor: 'c' }, nodes } },
+      data: {
+        search: {
+          issueCount: issueCount ?? nodes.length,
+          pageInfo: { hasNextPage, endCursor: 'c' },
+          nodes,
+        },
+      },
     }), { status: 200, headers: { 'content-type': 'application/json' } });
   };
   return queries;
@@ -125,4 +131,42 @@ test('a GraphQL read with a lost response is not uncertain', async () => {
     (e) => e.uncertain === false,
     'reads are freely retryable and must not be flagged ambiguous',
   );
+});
+
+test('a shortfall against GitHub own count is measured, not inferred', async () => {
+  const env = makeEnv(APP);
+  // GitHub says 60; the page budget lets us take 25. The truncation flag would
+  // say "we stopped early"; only issueCount can say "10 rows exist that we do
+  // not hold".
+  searchDouble(({ q }) => {
+    const base = /updated:(\S+)\.\./.exec(q)[1];
+    const t = Date.parse(base) + 60_000;
+    return {
+      issueCount: 60,
+      nodes: [node(1, new Date(t).toISOString())],
+      hasNextPage: true,
+    };
+  });
+
+  const report = await ingestOnce(env, {});
+  assert.ok(report.shortfall > 0, 'the gap between what exists and what we hold must be reported');
+  assert.ok(report.expected > report.fetched);
+
+  const row = env.raw.prepare("SELECT value FROM meta WHERE key='last_coverage'").get();
+  const cov = JSON.parse(row.value);
+  assert.equal(cov.shortfall, cov.expected - cov.fetched);
+});
+
+test('a fully covered window reports no shortfall', async () => {
+  const env = makeEnv(APP);
+  searchDouble(({ q }) => {
+    const base = /updated:(\S+)\.\./.exec(q)[1];
+    return {
+      issueCount: 1,
+      nodes: [node(1, new Date(Date.parse(base) + 60_000).toISOString())],
+      hasNextPage: false,
+    };
+  });
+  const report = await ingestOnce(env, {});
+  assert.equal(report.shortfall, 0);
 });

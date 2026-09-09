@@ -527,7 +527,13 @@ function render() {
 
   // A board that silently knows less than it claims is worse than no board, so
   // the edges of its coverage are shown rather than inferred.
-  if (s.last_truncated) {
+  // A measured shortfall outranks the truncation flags: those say a loop
+  // stopped early, this says GitHub had rows we do not hold.
+  if (s.coverage?.shortfall > 0) {
+    meta.append(el('span', 'warn small',
+      ` · last sync found ${s.coverage.expected} items and stored ${s.coverage.fetched}`
+      + ` — ${s.coverage.shortfall} not collected`));
+  } else if (s.last_truncated) {
     meta.append(el('span', 'warn small',
       ' · last sync hit its page limit — some updates are not in yet'));
   } else if (s.mentions_truncated) {

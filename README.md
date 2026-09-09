@@ -92,6 +92,25 @@ already marked. The inbox answers "what needs me"; the feed answers "what has
 actually been happening", which is how you check the poller is doing its job
 before trusting it instead of GitHub's own notifications.
 
+### Coverage is measured, not assumed
+
+A feed built from the ingest stream can only show what that stream collected; on
+its own it cannot demonstrate that nothing was missed. The truncation flags do
+not close that gap either, since they are derived from the same paging that did
+the losing — they report that a loop stopped early, not whether anything was
+actually lost.
+
+So every search window also reads GitHub's own `issueCount` for that window, and
+each run records what GitHub said existed against what it came away with:
+
+```json
+"coverage": { "expected": 812, "fetched": 812, "shortfall": 0 }
+```
+
+That number does not come from our paging, which is what makes it worth
+anything. A non-zero `shortfall` is shown on the board, and it catches a failure
+mode nobody anticipated rather than only the ones that were.
+
 ## Security model
 
 Everything from GitHub is hostile input. Discussions are open to anyone.

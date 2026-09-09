@@ -32,6 +32,7 @@ const COMMENT_FIELDS = 'id author { login __typename } createdAt body';
 const SEARCH_QUERY = `
 query($q: String!, $type: SearchType!, $after: String) {
   search(query: $q, type: $type, first: 25, after: $after) {
+    issueCount
     pageInfo { hasNextPage endCursor }
     nodes {
       __typename
@@ -95,8 +96,14 @@ async function searchWindow(env, type, since, until, maxPages, { asc = false, sc
   const out = [];
   let after = null;
   let complete = false;
+  // What GitHub says the window contains, read from the first page. This is the
+  // only number in the pipeline that does not come from our own paging, which is
+  // what makes it usable as an independent check: "I stopped early" is a claim
+  // about our loop, "GitHub had 60 and I hold 50" is a claim about the data.
+  let expected = null;
   for (let page = 0; page < maxPages; page++) {
     const data = await graphql(env, SEARCH_QUERY, { q, type, after });
+    if (expected == null) expected = data.search.issueCount ?? null;
     out.push(...data.search.nodes.filter(Boolean));
     if (!data.search.pageInfo.hasNextPage) { complete = true; break; }
     after = data.search.pageInfo.endCursor;
@@ -109,7 +116,7 @@ async function searchWindow(env, type, since, until, maxPages, { asc = false, sc
     if (!oldest || Date.parse(n.updatedAt) < Date.parse(oldest)) oldest = n.updatedAt;
     if (!newest || Date.parse(n.updatedAt) > Date.parse(newest)) newest = n.updatedAt;
   }
-  return { nodes: out, complete, oldest, newest };
+  return { nodes: out, complete, oldest, newest, expected, fetched: out.length };
 }
 
 /**
@@ -329,6 +336,10 @@ export async function ingestOnce(env, { full = false } = {}) {
   const report = {
     incremental: 0, backfill: 0, mentions: 0, backfill_to: null, done: false,
     incremental_truncated: false, backfill_truncated: false, mentions_truncated: false,
+    // GitHub's own count for every window this run touched, against what we
+    // actually came away with. Independent of our paging: it is the difference
+    // between "my loop finished" and "I hold what exists".
+    expected: 0, fetched: 0,
   };
 
   // 1. Incremental: everything updated since the last successful run, with an
@@ -346,7 +357,11 @@ export async function ingestOnce(env, { full = false } = {}) {
   let covered = now;
   let truncated = false;
   for (const type of ['ISSUE', 'DISCUSSION']) {
-    const { nodes, complete, newest } = await searchWindow(env, type, since, now, maxPages, { asc: true });
+    const { nodes, complete, newest, expected, fetched } = await searchWindow(
+      env, type, since, now, maxPages, { asc: true },
+    );
+    report.expected += expected ?? fetched;
+    report.fetched += fetched;
     report.incremental += await persist(env, nodes);
     if (complete) continue;
     truncated = true;
@@ -382,9 +397,11 @@ export async function ingestOnce(env, { full = false } = {}) {
   const mentionSince = new Date(await getMeta(env, 'mentions_ingest_at', since.toISOString()));
   let mentionCovered = now;
   for (const type of ['ISSUE', 'DISCUSSION']) {
-    const { nodes, complete, newest } = await searchWindow(env, type, mentionSince, now, 2, {
-      asc: true, scope: `mentions:${owner}`,
-    });
+    const { nodes, complete, newest, expected, fetched } = await searchWindow(
+      env, type, mentionSince, now, 2, { asc: true, scope: `mentions:${owner}` },
+    );
+    report.expected += expected ?? fetched;
+    report.fetched += fetched;
     report.mentions += await persist(env, nodes);
     if (complete) continue;
     report.mentions_truncated = true;
@@ -409,7 +426,11 @@ export async function ingestOnce(env, { full = false } = {}) {
     // stranded the unread remainder of an overflowing window.
     let reached = from;
     for (const type of ['ISSUE', 'DISCUSSION']) {
-      const { nodes, complete, oldest } = await searchWindow(env, type, from, cursor, 20);
+      const { nodes, complete, oldest, expected, fetched } = await searchWindow(
+        env, type, from, cursor, 20,
+      );
+      report.expected += expected ?? fetched;
+      report.fetched += fetched;
       report.backfill += await persist(env, nodes);
       if (complete) continue;
       report.backfill_truncated = true;
@@ -431,18 +452,37 @@ export async function ingestOnce(env, { full = false } = {}) {
   await setMeta(env, 'last_truncated',
     report.incremental_truncated || report.backfill_truncated ? now.toISOString() : '');
   await setMeta(env, 'mentions_truncated_at', report.mentions_truncated ? now.toISOString() : '');
+
+  // The coverage check the feed could not previously make about itself.
+  //
+  // Truncation flags say a loop stopped early; they cannot say whether anything
+  // was actually lost, because they are derived from the same paging that did
+  // the losing. `issueCount` comes from GitHub, so comparing it against what we
+  // hold answers the real question — and answers it even for a failure mode
+  // nobody anticipated, which is the point of an independent check rather than
+  // a wider net.
+  report.shortfall = Math.max(report.expected - report.fetched, 0);
+  await setMeta(env, 'last_coverage', JSON.stringify({
+    at: now.toISOString(),
+    expected: report.expected,
+    fetched: report.fetched,
+    shortfall: report.shortfall,
+  }));
   await log(env, 'ingest', 'poll', null, report);
   return report;
 }
 
+const safeJson = (raw) => { try { return raw ? JSON.parse(raw) : null; } catch { return null; } };
+
 /** Small helpers the API surfaces so the board can show ingest health. */
 export async function ingestStatus(env) {
-  const [lastIngest, cursor, truncated, mentionsTruncated, mentionsAt, count] = await Promise.all([
+  const [lastIngest, cursor, truncated, mentionsTruncated, mentionsAt, coverageRaw, count] = await Promise.all([
     getMeta(env, 'last_ingest_at'),
     getMeta(env, 'backfill_cursor'),
     getMeta(env, 'last_truncated'),
     getMeta(env, 'mentions_truncated_at'),
     getMeta(env, 'mentions_ingest_at'),
+    getMeta(env, 'last_coverage'),
     first(env, 'SELECT COUNT(*) AS c FROM items'),
   ]);
   const backfillDays = Number(env.BACKFILL_DAYS || 90);
@@ -462,6 +502,9 @@ export async function ingestStatus(env) {
     // is the stream with no other safety net once notifications are off.
     mentions_ingest: mentionsAt || null,
     mentions_truncated: mentionsTruncated || null,
+    // The one number that is not self-reported: GitHub's count for the windows
+    // the last run touched, against what it came away with.
+    coverage: safeJson(coverageRaw),
     items: count?.c ?? 0,
   };
 }

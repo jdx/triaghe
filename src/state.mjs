@@ -2,6 +2,7 @@
  * Pure, deterministic triage state. No model runs here — this is the part that
  * decides what you see, so it stays auditable and cheap.
  */
+import { isReleasePr } from './config.mjs';
 
 /**
  * When did work last arrive from outside?
@@ -63,12 +64,37 @@ export function computeState(item, triage) {
     return { state: 'done', reason: label };
   }
 
+  // Release PRs get their own lane rather than the inbox.
+  //
+  // They are real work — somebody has to merge them to ship — but they are a
+  // scheduled chore, not a person waiting, and they arrive often enough to be
+  // most of what a quiet inbox contains. Deliberately placed *after* the
+  // resolved branch: merging one is how a release happens, and a merged release
+  // PR should read as done like anything else.
+  //
+  // Not hidden. `?state=release` and the Releases tab still list them, and the
+  // feed shows them regardless, because an inbox filter that loses a pending
+  // release is worse than one that never existed.
+  //
+  // It also yields to a person. A release PR is a chore right up until somebody
+  // turns up on it — "this one breaks the macOS build", "hold this until #400
+  // lands" — and that comment has to reach the inbox like any other. Without
+  // the check the lane is unconditional, and because both the Mentions filter
+  // and the badge require `needs_you`, tagging the owner on a release PR would
+  // have been the one way to make a direct request invisible.
+  const lastOwner = item.last_owner_at ? Date.parse(item.last_owner_at) : 0;
+  const personWaiting = inbound.human
+    && inbound.at
+    && Date.parse(inbound.at) > lastOwner;
+
+  if (isReleasePr(item) && !personWaiting) {
+    return { state: 'release', reason: `release cut by ${item.author} — merge to ship` };
+  }
+
   // Nothing has happened at all. Only reachable for an item with no author and
   // no comments, which GitHub should not produce, but the state machine should
   // not depend on that.
   if (!inbound.at) return { state: 'awaiting_them', reason: 'no activity' };
-
-  const lastOwner = item.last_owner_at ? Date.parse(item.last_owner_at) : 0;
 
   if (Date.parse(inbound.at) > lastOwner) {
     const reason = inbound.human

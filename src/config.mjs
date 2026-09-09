@@ -64,3 +64,57 @@ export function mentionsOwner(text, owner) {
   const safe = String(owner).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return new RegExp(`(^|[^A-Za-z0-9._/-])@${safe}(?![A-Za-z0-9-])`, 'i').test(text);
 }
+
+/**
+ * Did a *person* tag the owner?
+ *
+ * Bots tag the owner constantly and mean nothing by it: release automation puts
+ * `@owner` in generated changelogs, AI reviewers address their summaries to the
+ * author. Counting those defeats the whole point of the mention band, which is
+ * "somebody is waiting on you specifically" — in production all three
+ * outstanding mentions were release PRs from `mise-en-dev`.
+ *
+ * Every mention signal routes through here so the badge, the list, and the feed
+ * cannot disagree about what counts.
+ */
+export function isHumanMention(login, authorType, text, owner) {
+  return !!login
+    && !isOwner(login, owner)
+    && !isBot(login, authorType)
+    && mentionsOwner(text, owner);
+}
+
+/** Labels that mark a pull request as a release cut. */
+export const RELEASE_LABELS = new Set(['release', 'releases', 'autorelease']);
+
+/**
+ * A title that is a release cut rather than a change to release machinery.
+ *
+ * Anchored at the start and requiring the release word to be the subject, so
+ * `chore: release v1.35.2` and `Release 2026.9.4` match while `fix(release):
+ * handle missing tag` and `docs: explain the release process` do not.
+ */
+const RELEASE_TITLE = /^(?:(?:chore|ci|build)(?:\([^)]*\))?:\s*)?release\b/i;
+
+/**
+ * Is this a release PR?
+ *
+ * Two signals, because neither is reliable alone. The label is the honest one
+ * but is not applied everywhere — of the three release PRs open on the live
+ * board, `jdx/usage` and `jdx/mise` carried a `release` label and `jdx/fnox`
+ * carried none at all, despite all three being the same bot cutting the same
+ * kind of release.
+ *
+ * The title fallback is therefore gated on bot authorship. A person writing
+ * "release: ..." is doing something a human decided to do and belongs in the
+ * inbox; a release bot is executing a schedule.
+ */
+export function isReleasePr(item) {
+  if (item?.kind !== 'pr') return false;
+
+  const raw = item.labels;
+  const labels = Array.isArray(raw) ? raw : JSON.parse(raw || '[]');
+  if (labels.some((l) => RELEASE_LABELS.has(String(l).toLowerCase()))) return true;
+
+  return !!item.author_is_bot && RELEASE_TITLE.test(item.title || '');
+}

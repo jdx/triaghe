@@ -39,6 +39,7 @@ const TABS = [
   ['needs_you', 'Inbox'],
   ['mentions', 'Mentions'],
   ['awaiting_them', 'Waiting'],
+  ['release', 'Releases'],
   ['snoozed', 'Snoozed'],
   ['done', 'Done'],
   ['all', 'All'],

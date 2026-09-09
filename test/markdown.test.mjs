@@ -136,3 +136,59 @@ test('empty and whitespace-only input renders nothing at all', () => {
   assert.deepEqual(parseMarkdown(null), []);
   assert.deepEqual(parseMarkdown('\n\n   \n'), []);
 });
+
+test('a destination may contain balanced parentheses', () => {
+  // Wikipedia disambiguators are the common case, and a `[^\s)]*` destination
+  // stops at the first `)`, leaving the whole link as literal markdown.
+  const url = 'https://en.wikipedia.org/wiki/Function_(mathematics)';
+  const out = render(`see [docs](${url}) for more`);
+  assert.deepEqual(hrefs(out), [url]);
+  assert.match(serialize(out), /<a[^>]*>docs<\/a>/);
+  assert.match(serialize(out), /for more/, 'the tail after the link survives');
+});
+
+test('nested balanced parentheses are kept, unbalanced ones end the link', () => {
+  assert.deepEqual(
+    hrefs(render('[a](https://x.test/a_(b_(c))_d)')),
+    ['https://x.test/a_(b_(c))_d'],
+  );
+
+  // An unmatched `(` is not a link. The label stays visible as literal text
+  // rather than the scanner running to the end of the body hunting for a close.
+  // The URL inside is then simply a URL in a paragraph, so the bare-URL rule
+  // picks it up — an anchor exists, but its text is the address, never `a`.
+  const broken = serialize(render('[a](https://x.test/oops('));
+  assert.match(broken, /\[a\]\(/, 'the markdown is shown as written');
+  assert.doesNotMatch(broken, /<a[^>]*>a<\/a>/, 'and it never becomes a link labelled "a"');
+});
+
+test('an escaped parenthesis does not close the destination', () => {
+  assert.deepEqual(
+    hrefs(render('[a](https://x.test/a\\)b)')),
+    ['https://x.test/a)b'],
+  );
+});
+
+test('a titled link still parses, in all three delimiters', () => {
+  for (const title of ['"t"', "'t'", '(t)']) {
+    assert.deepEqual(
+      hrefs(render(`[a](https://x.test/p ${title})`)),
+      ['https://x.test/p'],
+      `title delimited by ${title}`,
+    );
+  }
+});
+
+test('the angle-bracket destination form is recognised', () => {
+  assert.deepEqual(
+    hrefs(render('[a](<https://x.test/p?q=1>)')),
+    ['https://x.test/p?q=1'],
+  );
+
+  // A literal space inside one is compacted rather than encoded, because
+  // safeUrl strips everything below U+0021 before testing the scheme — a
+  // browser does the same before resolving one, which is what stops
+  // `java\nscript:` from passing as an ordinary word. Mangling a rare URL is
+  // the accepted cost of that check; it is not an oversight.
+  assert.deepEqual(hrefs(render('[a](<https://x.test/a b>)')), ['https://x.test/ab']);
+});

@@ -158,3 +158,36 @@ test('the client never has an HTML-string sink to reach for', () => {
     for (const sink of SINKS) assert.doesNotMatch(src, sink, `${file} matches ${sink}`);
   }
 });
+
+test('deeply nested inline markup does not recurse without bound', () => {
+  // The block cap did not cover this: emphasis and link labels both recurse
+  // through parseInline, and the renderer then walks whatever tree comes out.
+  // A comment is truncated at 2k on ingest, so that is the budget an attacker
+  // has — and it is thousands of frames if nothing stops it.
+  const payloads = {
+    emphasis: '*'.repeat(2000) + 'x' + '*'.repeat(2000),
+    labels: '['.repeat(2000) + 'x' + ']'.repeat(2000),
+    // Prefixed deliberately. At the start of a line `~~~~` is a code fence, not
+    // nested strikethrough, and the fence would swallow the payload before the
+    // inline scanner ever saw it — which would make this test pass for the
+    // wrong reason.
+    strike: 'a ' + '~~'.repeat(1000) + 'x' + '~~'.repeat(1000),
+    links: '[a](b'.repeat(400),
+  };
+
+  for (const [name, payload] of Object.entries(payloads)) {
+    const out = render(payload);
+    assert.ok(serialize(out).includes('x') || name === 'links',
+      `${name}: the content is still shown`);
+  }
+});
+
+test('the inline cap degrades to text rather than dropping content', () => {
+  // Past the cap the remaining source is emitted verbatim. That is the property
+  // worth pinning: a body that nests too deeply becomes less pretty, never less
+  // complete, so nothing a person wrote can be made invisible by wrapping it in
+  // enough asterisks.
+  const deep = '*'.repeat(40) + 'findme' + '*'.repeat(40);
+  assert.match(serialize(render(deep)), /findme/);
+});
+

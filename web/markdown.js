@@ -160,8 +160,9 @@ function parseBlocks(lines, ctx) {
 // on every character.
 const ESCAPE = /\\([\\`*_{}[\]()#+\-.!~>|])/y;
 const CODE_SPAN = /(`+)([^]*?)\1(?!`)/y;
-const IMAGE = /!\[([^\]]*)\]\([ \t]*([^\s)]*)(?:[ \t]+"[^"]*")?[ \t]*\)/y;
-const LINK = /\[([^\]]*)\]\([ \t]*([^\s)]*)(?:[ \t]+"[^"]*")?[ \t]*\)/y;
+// Label only. The destination cannot be expressed as a regex because it may
+// contain balanced parentheses — see readDestination.
+const LABEL = /(!?)\[([^\]]*)\]\(/y;
 const AUTOLINK = /<([A-Za-z][A-Za-z\d+.-]*:[^\s<>]+)>/y;
 const BARE_URL = /https?:\/\/[^\s<>()[\]"'`]+/y;
 // GitHub's own login rule: alphanumerics and single internal hyphens, max 39.
@@ -169,8 +170,92 @@ const MENTION = /@([A-Za-z\d](?:[A-Za-z\d]|-(?=[A-Za-z\d])){0,38})/y;
 const ISSUE_NUM = /#(\d{1,9})(?![\w-])/y;
 const REPO_TAIL = /(?:^|[\s([])([A-Za-z\d][\w.-]*\/[\w.-]+)$/;
 
+/**
+ * Read a link destination starting just after the `(`.
+ *
+ * A regex cannot do this. `[docs](https://en.wikipedia.org/wiki/Function_(mathematics))`
+ * is an ordinary Wikipedia link and extremely common in GitHub Markdown, but
+ * any `[^\s)]*` destination stops at the first `)` and leaves the whole thing
+ * as literal text. CommonMark's rule is that unescaped parentheses are allowed
+ * while they stay balanced, so this counts them.
+ *
+ * The depth cap is not politeness: the counter is driven by attacker-controlled
+ * input, and without it `(((((…` merely runs long, but with a cap the scan is
+ * bounded by the string it is already walking.
+ *
+ * @returns {{ dest: string, end: number } | null} `end` is the index after `)`.
+ */
+function readDestination(text, start) {
+  let i = start;
+  while (i < text.length && (text[i] === ' ' || text[i] === '\t')) i++;
+
+  let dest = '';
+  let depth = 0;
+
+  // The <...> form takes anything except a newline or an unescaped '>'.
+  if (text[i] === '<') {
+    i++;
+    while (i < text.length && text[i] !== '>' && text[i] !== '\n') {
+      if (text[i] === '\\' && i + 1 < text.length) { dest += text[++i]; i++; continue; }
+      dest += text[i++];
+    }
+    if (text[i] !== '>') return null;
+    i++;
+  } else {
+    for (; i < text.length; i++) {
+      const c = text[i];
+      if (c === '\\' && i + 1 < text.length) { dest += text[++i]; continue; }
+      if (c === '(') {
+        if (++depth > MAX_DEPTH) return null;
+        dest += c;
+        continue;
+      }
+      if (c === ')') {
+        if (depth === 0) break;
+        depth--;
+        dest += c;
+        continue;
+      }
+      // Whitespace ends the destination; a title may follow.
+      if (/\s/.test(c)) break;
+      dest += c;
+    }
+    if (depth !== 0) return null;
+  }
+
+  while (i < text.length && /[ \t]/.test(text[i])) i++;
+
+  // Optional title, in any of the three delimiters CommonMark allows.
+  const open = text[i];
+  if (open === '"' || open === "'" || open === '(') {
+    const close = open === '(' ? ')' : open;
+    i++;
+    while (i < text.length && text[i] !== close) {
+      if (text[i] === '\\') i++;
+      i++;
+    }
+    if (text[i] !== close) return null;
+    i++;
+    while (i < text.length && /[ \t]/.test(text[i])) i++;
+  }
+
+  if (text[i] !== ')') return null;
+  return { dest, end: i + 1 };
+}
+
 /** @returns {Array} inline nodes: text, code, link, strong, em, strike, break. */
 export function parseInline(text, ctx = {}) {
+  // Inline nesting is capped separately from block nesting.
+  //
+  // The block cap alone left this open: emphasis and link labels both recurse
+  // through here, and the renderer's `fill` then walks whatever tree comes out.
+  // A 2k comment of `*`-runs or `[[[[[…` is a few thousand frames deep, and
+  // whether that overflows is a property of the engine rather than of anything
+  // this file controls. Past the cap the remaining text is emitted verbatim,
+  // which is degraded but never wrong.
+  const depth = ctx.inlineDepth ?? 0;
+  if (depth > MAX_DEPTH) return text ? [{ type: 'text', text }] : [];
+  const nested = { ...ctx, inlineDepth: depth + 1 };
   const out = [];
   let buf = '';
   const flush = () => { if (buf) { out.push({ type: 'text', text: buf }); buf = ''; } };
@@ -199,32 +284,35 @@ export function parseInline(text, ctx = {}) {
     }
 
     if (c === '!' || c === '[') {
-      const isImage = c === '!';
-      const m = matchAt(isImage ? IMAGE : LINK, text, i);
-      if (m) {
-        const href = safeUrl(m[2]);
+      const m = matchAt(LABEL, text, i);
+      const dest = m && readDestination(text, i + m[0].length);
+      if (m && dest) {
+        const isImage = m[1] === '!';
+        const label = m[2];
+        const raw = text.slice(i, dest.end);
+        const href = safeUrl(dest.dest);
         if (href && isImage) {
           // Images are rendered as links, deliberately. The CSP has no remote
           // img-src so an <img> would render broken anyway, and the reason the
           // CSP says that is that a remote image in a stranger's issue is a
           // read receipt for the maintainer's IP address. A link is opt-in.
-          push({ type: 'link', href, image: true, children: [{ type: 'text', text: m[1] || href }] });
-          i += m[0].length;
+          push({ type: 'link', href, image: true, children: [{ type: 'text', text: label || href }] });
+          i = dest.end;
           continue;
         }
         if (href) {
           // `inLink` stops the label's own `@name` or bare URL from autolinking
           // inside the anchor: nested <a> is invalid, and appending elements
           // gets no parser fixup to rescue it the way innerHTML would.
-          push({ type: 'link', href, children: parseInline(m[1], { ...ctx, inLink: true }) });
-          i += m[0].length;
+          push({ type: 'link', href, children: parseInline(label, { ...nested, inLink: true }) });
+          i = dest.end;
           continue;
         }
         // A rejected destination is not silently dropped: the label and the URL
         // both stay visible as text, so `[click here](javascript:…)` reads as
         // what it is instead of looking like an ordinary word.
-        push({ type: 'text', text: m[0] });
-        i += m[0].length;
+        push({ type: 'text', text: raw });
+        i = dest.end;
         continue;
       }
     }
@@ -243,7 +331,7 @@ export function parseInline(text, ctx = {}) {
 
     const emph = emphasisAt(text, i);
     if (emph) {
-      push({ type: emph.type, children: parseInline(emph.inner, ctx) });
+      push({ type: emph.type, children: parseInline(emph.inner, nested) });
       i += emph.len;
       continue;
     }
@@ -427,19 +515,49 @@ function renderBlock(doc, block, opts) {
   }
 }
 
-function fill(doc, parent, children, opts) {
+/**
+ * Unreachable today, and kept anyway.
+ *
+ * `parseInline` caps depth, and every tree that reaches here came from it, so
+ * this limit cannot currently trigger — there is no test for it because there
+ * is no input that produces it. It stays because the two caps protect the same
+ * stack from opposite ends: raise MAX_DEPTH, add a nesting inline type, or
+ * export a tree-taking entry point, and this is what stops that change from
+ * being a browser hang rather than a rendering bug.
+ *
+ * Past the cap the subtree is flattened to its text, so nothing leaves the
+ * page — only its formatting does.
+ */
+function fill(doc, parent, children, opts, depth = 0) {
+  if (depth > MAX_DEPTH * 2) {
+    parent.append(doc.createTextNode(flatten(children)));
+    return parent;
+  }
+  const down = (el, node) => fill(doc, el, node.children, opts, depth + 1);
   for (const node of children) {
     switch (node.type) {
       case 'text': parent.append(doc.createTextNode(node.text)); break;
       case 'break': parent.append(mk(doc, 'br')); break;
       case 'code': parent.append(mk(doc, 'code', 'mdcodespan', node.text)); break;
-      case 'link': parent.append(fill(doc, anchor(doc, node), node.children, opts)); break;
-      case 'strong': parent.append(fill(doc, mk(doc, 'strong'), node.children, opts)); break;
-      case 'em': parent.append(fill(doc, mk(doc, 'em'), node.children, opts)); break;
-      case 'strike': parent.append(fill(doc, mk(doc, 'del'), node.children, opts)); break;
+      case 'link': parent.append(down(anchor(doc, node), node)); break;
+      case 'strong': parent.append(down(mk(doc, 'strong'), node)); break;
+      case 'em': parent.append(down(mk(doc, 'em'), node)); break;
+      case 'strike': parent.append(down(mk(doc, 'del'), node)); break;
       // No default: an unknown inline type is a bug in this file, and dropping
       // it is better than guessing at an element for it.
     }
   }
   return parent;
+}
+
+/** Text of an inline subtree, iteratively — the point here is to not recurse. */
+function flatten(children) {
+  let out = '';
+  const stack = [...children].reverse();
+  while (stack.length) {
+    const node = stack.pop();
+    if (node.text) out += node.text;
+    if (node.children) for (let i = node.children.length - 1; i >= 0; i--) stack.push(node.children[i]);
+  }
+  return out;
 }

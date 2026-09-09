@@ -155,7 +155,13 @@ export function computeState(item, triage, owner) {
   // There is no Releases tab. That is deliberate: with this exception in place
   // the lane holds only things nobody is waiting on, so a tab would be a badge
   // counting work that never needs attention. `?state=release` still lists them.
-  if (isReleasePr(item, owner) && !personWaiting) {
+  //
+  // A draft is never a release cut, whatever it is called. The lane says "merge
+  // to ship" and a draft cannot be merged, so an owner's half-finished release
+  // would have been filed as done-and-waiting instead of staying in their own
+  // list — and this branch runs before both draft rules, so nothing downstream
+  // would have caught it.
+  if (isReleasePr(item, owner) && !item.is_draft && !personWaiting) {
     return { state: 'release', reason: `release cut by ${item.author} — merge to ship` };
   }
 

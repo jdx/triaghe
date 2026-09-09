@@ -648,5 +648,20 @@ $('#search').addEventListener('input', (e) => {
   searchTimer = setTimeout(() => { state.q = v; state.cursor = 0; resetPaging(); refresh(); }, 200);
 });
 
+/**
+ * `?state=` picks the opening view, including the lanes that have no tab.
+ *
+ * Without this the documented way to inspect release PRs silently showed the
+ * inbox instead, which is worse than not documenting it: the reader concludes
+ * the lane is empty rather than that the URL did nothing.
+ *
+ * Validated against the states the server can actually return, so a typo or a
+ * crafted link opens the inbox rather than a permanently empty list.
+ */
+const OPENABLE = new Set([...TABS.map(([key]) => key),
+  'release', 'chore', 'draft', 'awaiting_them', 'snoozed', 'done', 'all']);
+const wanted = new URLSearchParams(location.search).get('state');
+if (wanted && OPENABLE.has(wanted)) state.tab = wanted;
+
 setInterval(refresh, 60_000);
 refresh().catch((e) => { $('#meta').textContent = `error: ${e.message}`; });

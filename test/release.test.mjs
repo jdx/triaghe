@@ -208,3 +208,28 @@ test('once the owner has answered, a release settles back into the lane', () => 
   });
   assert.equal(computeState(answered, null).state, 'release');
 });
+
+test('a draft release is not a release cut, it is an unfinished one', () => {
+  // The lane says "merge to ship" and a draft cannot be merged. This branch runs
+  // before both draft rules, so nothing downstream would have caught it — an
+  // owner's half-written release would have been filed as done-and-waiting
+  // instead of staying in their own list.
+  const mine = openPr({
+    author: 'jdx', author_is_bot: 0, labels: '["release"]', is_draft: 1,
+  });
+  const s = computeState(mine, null, 'jdx');
+  assert.equal(s.state, 'needs_you');
+  assert.match(s.reason, /your draft/);
+
+  // Somebody else's draft release belongs in the draft lane for the same
+  // reason, not in a lane that claims it is ready.
+  const theirs = openPr({
+    author: 'mise-en-dev', author_is_bot: 1, labels: '["release"]', is_draft: 1,
+  });
+  assert.equal(computeState(theirs, null, 'jdx').state, 'draft');
+});
+
+test('a ready release is still a release', () => {
+  const ready = openPr({ author: 'jdx', author_is_bot: 0, labels: '["release"]', is_draft: 0 });
+  assert.equal(computeState(ready, null, 'jdx').state, 'release');
+});

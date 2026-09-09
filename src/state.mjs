@@ -133,6 +133,31 @@ export function computeState(item, triage, owner) {
     };
   }
 
+  // Somebody else's draft is not ready to be looked at.
+  //
+  // A draft is the author saying so themselves, which makes it the most
+  // reliable signal on the board — better than any heuristic here, because it
+  // is a statement of intent rather than an inference from activity. It also
+  // costs nothing to honour: `is_draft` is refreshed on every poll, so marking
+  // a PR ready brings it back and converting it to a draft again removes it,
+  // with no state of our own to keep in step.
+  //
+  // The owner's own drafts are excluded above, deliberately — an unfinished PR
+  // of your own is the clearest case of something you have to finish.
+  //
+  // The mention exception is narrow on purpose. "Never show me drafts" and
+  // "someone is trying to reach me" can both be true at once, and both the
+  // Mentions filter and the badge require `needs_you`, so an unconditional
+  // lane would make tagging the owner from a draft the one reliable way to be
+  // invisible. An ordinary comment on a draft still does not qualify: being
+  // tagged is a request, a comment is just work in progress.
+  const mentionOutstanding = item.last_mention_at
+    && Date.parse(item.last_mention_at) > lastOwner;
+
+  if (item.is_draft && !isOwner(item.author, owner) && !mentionOutstanding) {
+    return { state: 'draft', reason: `draft by ${item.author} — not ready yet` };
+  }
+
   if (isReleasePr(item) && !personWaiting) {
     return { state: 'release', reason: `release cut by ${item.author} — merge to ship` };
   }

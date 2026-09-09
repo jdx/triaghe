@@ -9,7 +9,15 @@ import { postComment } from './post.mjs';
 import { ingestOnce, ingestStatus } from './ingest.mjs';
 import { ownerLogin } from './config.mjs';
 
-const OUTCOMES = new Set(['responded', 'pr_opened', 'closed', 'waiting']);
+/**
+ * `dismissed` is the neutral one, and the reason it exists is that the others
+ * all assert *why*: you responded, you opened a PR, you closed it. Most of what
+ * comes off a board is none of those — it is "not this, not now" — and being
+ * made to claim a reason you did not have is what stops people clearing a queue
+ * at all. It settles exactly like the rest: a person arriving afterwards brings
+ * it straight back, which is what makes it a dismissal rather than an ignore.
+ */
+const OUTCOMES = new Set(['responded', 'pr_opened', 'closed', 'waiting', 'dismissed']);
 
 /**
  * The list view never selects `body`. With a few thousand items the bodies are

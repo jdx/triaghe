@@ -132,3 +132,74 @@ test('the owner\'s own PR no longer reads as automated', () => {
   assert.doesNotMatch(s.reason, /automated \(jdx\)/);
   assert.match(s.reason, /coderabbitai/, 'the reason names who actually spoke');
 });
+
+test('the owner\'s own open PR is inbox work', () => {
+  // Stated rather than derived. After the change above nothing else would put
+  // it here: only CI and review bots speak on most of them, and a bot speaking
+  // now means nothing. It is the one inbox entry that is not somebody waiting —
+  // it is the owner's own unfinished work.
+  const mine = renovate({
+    author: 'jdx',
+    author_is_bot: 0,
+    title: 'perf(history): rebuild index metadata with gix',
+    last_owner_at: '2026-06-01T00:00:00Z',
+    last_actor: 'coderabbitai',
+    last_actor_at: '2026-06-02T00:00:00Z',
+    last_actor_is_bot: 1,
+  });
+  const s = computeState(mine, null, 'jdx');
+  assert.equal(s.state, 'needs_you');
+  assert.match(s.reason, /your PR/);
+});
+
+test('a draft of the owner\'s says so', () => {
+  const draft = renovate({ author: 'jdx', author_is_bot: 0, is_draft: 1 });
+  assert.match(computeState(draft, null, 'jdx').reason, /your draft/);
+});
+
+test('the owner\'s merged PR is done, not still open', () => {
+  const merged = renovate({
+    author: 'jdx',
+    author_is_bot: 0,
+    state: 'MERGED',
+    resolved_at: '2026-06-02T00:00:00Z',
+  });
+  assert.equal(computeState(merged, null, 'jdx').state, 'done',
+    'the lane has to drain, or it is just another list that grows');
+});
+
+test('a person waiting on the owner\'s PR outranks "still open"', () => {
+  const asked = renovate({
+    author: 'jdx',
+    author_is_bot: 0,
+    last_owner_at: '2026-06-01T00:00:00Z',
+    last_human_at: '2026-06-02T00:00:00Z',
+    last_human_actor: 'alice',
+  });
+  const s = computeState(asked, null, 'jdx');
+  assert.equal(s.state, 'needs_you');
+  assert.match(s.reason, /alice/, 'a question on your own PR still reads as the question');
+});
+
+test('an issue the owner opened is not treated as work in flight', () => {
+  // Deliberately PRs only. An issue somebody opens on their own repository is
+  // usually a note to themselves; an open PR is unfinished work.
+  const note = renovate({
+    author: 'jdx', author_is_bot: 0, kind: 'issue', last_owner_at: '2026-06-01T00:00:00Z',
+  });
+  assert.notEqual(computeState(note, null, 'jdx').state, 'needs_you');
+});
+
+test('someone else\'s PR is not the owner\'s to finish', () => {
+  const theirs = renovate({
+    author: 'alice',
+    author_is_bot: 0,
+    last_owner_at: '2026-06-02T00:00:00Z',
+    last_actor: 'socket-security',
+    last_actor_at: '2026-06-03T00:00:00Z',
+    last_actor_is_bot: 1,
+    last_human_at: '2026-06-01T00:00:00Z',
+    last_human_actor: 'alice',
+  });
+  assert.equal(computeState(theirs, null, 'jdx').state, 'awaiting_them');
+});

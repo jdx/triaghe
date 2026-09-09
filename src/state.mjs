@@ -2,7 +2,7 @@
  * Pure, deterministic triage state. No model runs here — this is the part that
  * decides what you see, so it stays auditable and cheap.
  */
-import { isReleasePr } from './config.mjs';
+import { isOwner, isReleasePr } from './config.mjs';
 
 /**
  * When did work last arrive from outside?
@@ -40,7 +40,7 @@ function lastInbound(item) {
 const personWaitingSince = (item, inbound, lastOwner) =>
   inbound.human && inbound.at && Date.parse(inbound.at) > lastOwner;
 
-export function computeState(item, triage) {
+export function computeState(item, triage, owner) {
   const now = Date.now();
 
   if (triage?.snoozed_until && Date.parse(triage.snoozed_until) > now) {
@@ -112,6 +112,26 @@ export function computeState(item, triage) {
   // and the badge require `needs_you`, tagging the owner on a release PR would
   // have been the one way to make a direct request invisible.
   const personWaiting = personWaitingSince(item, inbound, lastOwner);
+
+  // An open pull request the owner wrote is theirs to finish.
+  //
+  // This is the one inbox entry that is not somebody waiting, and it is here
+  // because it is the owner's own unfinished work — the queue they are trying
+  // to clear, not a request they are trying to answer. It has to be stated
+  // rather than fall out of the activity rules, because after this change
+  // nothing else would put it here: only CI and review bots speak on most of
+  // them, and the whole point above is that a bot speaking means nothing.
+  //
+  // Deliberately PRs and not issues. An issue the owner opened on their own
+  // repository is usually a note to themselves; an open PR is work in flight.
+  // It also sits after the resolved branch, so merging or closing one settles
+  // it, which is what makes the lane drain instead of accumulating.
+  if (isOwner(item.author, owner) && item.kind === 'pr' && !personWaiting) {
+    return {
+      state: 'needs_you',
+      reason: item.is_draft ? 'your draft — still open' : 'your PR — still open',
+    };
+  }
 
   if (isReleasePr(item) && !personWaiting) {
     return { state: 'release', reason: `release cut by ${item.author} — merge to ship` };

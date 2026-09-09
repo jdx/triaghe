@@ -32,15 +32,17 @@ const TRIAGE_COLUMNS = `
  * board refresh alongside /api/items; selecting the full LIST_COLUMNS here made
  * the cheapest request in the app scan the same width as the most expensive one.
  *
- * Keep this in step with computeState. Release detection added `kind`, `title`,
- * `labels` and `author_is_bot`; without them stats silently counted release PRs
- * as inbox while /api/items filed them under Releases, and the badge disagreed
- * with the list it was counting.
+ * Keep this in step with computeState, and treat a mismatch as a bug rather than
+ * a cost saving. Release detection added `kind`, `title`, `labels` and
+ * `author_is_bot`; without them stats silently counted release PRs as inbox
+ * while /api/items filed them under Releases, so the badge disagreed with the
+ * list it was counting. `is_draft` arrived the same way, with the owner's own
+ * open PRs.
  */
 const STATE_COLUMNS = `
   i.state, i.is_answered, i.resolved_at, i.last_actor, i.last_actor_at,
   i.last_owner_at, i.last_human_at, i.last_human_actor, i.last_mention_at,
-  i.kind, i.title, i.labels, i.author, i.author_is_bot,
+  i.kind, i.title, i.labels, i.author, i.author_is_bot, i.is_draft,
   t.outcome, t.marked_at_activity, t.snoozed_until`;
 
 const PENDING_DRAFTS =
@@ -54,8 +56,8 @@ SELECT ${LIST_COLUMNS}, ${TRIAGE_COLUMNS}, ${PENDING_DRAFTS}, ${OPEN_REQUESTS}
 FROM items i LEFT JOIN triage t ON t.item_id = i.id
 ${where}`;
 
-function decorate(row) {
-  const s = computeState(row, row);
+function decorate(row, owner) {
+  const s = computeState(row, row, owner);
   return {
     ...row,
     labels: JSON.parse(row.labels || '[]'),
@@ -93,7 +95,7 @@ async function listItems(env, params) {
   );
 
   const wanted = params.get('state');
-  let out = rows.map(decorate);
+  let out = rows.map((row) => decorate(row, ownerLogin(env)));
   if (wanted && wanted !== 'all') out = out.filter((i) => i.triage_state === wanted);
 
   // Outstanding mentions: tagged, not since answered, and still actionable.
@@ -235,7 +237,7 @@ async function itemDetail(env, id) {
 
   return {
     item: {
-      ...decorate(row),
+      ...decorate(row, ownerLogin(env)),
       body: full?.body ?? null,
       body_truncated: full?.body_truncated ?? 0,
       injection_flags: scanUntrusted(row.title, full?.body, ...comments.map((c) => c.body)),
@@ -386,6 +388,7 @@ async function snooze(env, id, days, actor) {
 }
 
 async function stats(env) {
+  const owner = ownerLogin(env);
   // Counts only — no bodies, no titles. This is the request the board makes
   // most often, so it stays as cheap as possible.
   const [byState, byRepo, pending, ingest] = await Promise.all([
@@ -400,7 +403,7 @@ async function stats(env) {
   const counts = {};
   let mentions = 0;
   for (const r of byState) {
-    const s = computeState(r, r).state;
+    const s = computeState(r, r, owner).state;
     counts[s] = (counts[s] || 0) + 1;
     // Mentions worth surfacing are the ones still waiting on the owner; a tag
     // you have already replied to is not outstanding.

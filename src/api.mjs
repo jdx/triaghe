@@ -207,6 +207,24 @@ async function handleQueue(env, requestId, action, body, identity) {
   // because a stuck 'claimed' row looks identical to an agent that is still
   // thinking.
   const failed = !!body.error;
+
+  // A success has to name a draft, and that draft has to belong to this
+  // request's item. Completed requests leave the open queue and item detail
+  // only shows drafts matching its own item_id, so a malformed agent response
+  // could otherwise close the request and take the draft with it — the work
+  // reported done, nothing to show for it, and no row left saying so.
+  if (!failed) {
+    const draftId = Number(body.draft_id);
+    if (!Number.isInteger(draftId)) {
+      return { status: 400, body: { error: 'completing a request requires draft_id' } };
+    }
+    const d = await first(env, 'SELECT item_id FROM drafts WHERE id=?', draftId);
+    if (!d) return { status: 400, body: { error: 'no such draft' } };
+    if (d.item_id !== req.item_id) {
+      return { status: 400, body: { error: 'draft belongs to a different item' } };
+    }
+  }
+
   const res = await run(env, `
     UPDATE draft_requests SET status=?, completed_at=?, draft_id=?, error=?
     WHERE id=? AND ${OPEN}`,
@@ -315,8 +333,18 @@ async function handleDraftAction(env, draftId, action, body, identity) {
   }
 
   if (action === 'reject') {
-    await run(env, "UPDATE drafts SET status='rejected', decided_by=?, decided_at=? WHERE id=?",
+    // Guarded on `pending` for the same reason approve is. Without it a stale
+    // tab could reject a draft that has already been posted, or discard could
+    // race an in-flight approval that had moved the row to `approving` — either
+    // way the database and audit log would record a rejection while a comment
+    // exists on GitHub.
+    const res = await run(env,
+      "UPDATE drafts SET status='rejected', decided_by=?, decided_at=? WHERE id=? AND status='pending'",
       identity.actor, new Date().toISOString(), draftId);
+    if (!res.meta?.changes) {
+      const cur = await first(env, 'SELECT status FROM drafts WHERE id=?', draftId);
+      return { status: 409, body: { error: `draft is ${cur?.status ?? 'gone'}` } };
+    }
     await log(env, identity.actor, 'draft.reject', draft.item_id, { draft_id: draftId });
     return { status: 200, body: await itemDetail(env, draft.item_id) };
   }

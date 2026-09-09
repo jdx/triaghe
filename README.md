@@ -240,10 +240,24 @@ three months and dying against the CPU limit.
 `j`/`k` move · `enter` detail · `o` open on GitHub · `r` responded · `p` PR opened
 · `x` ignore · `s` snooze 7d · `u` undo · `/` search
 
-## The node prototype
+## What happened to the node prototype
 
-`server.mjs`, `ingest.mjs` and `lib/` are the original `node:sqlite` version
-that runs on loopback. It still works and is kept until the deployed Worker has
-been used in anger. It has no Access layer — it binds `127.0.0.1` and trusts an
-`x-triaghe-actor` header, which is only safe because nothing can reach it.
-Delete it once the Worker is proven.
+`server.mjs`, `ingest.mjs` and `lib/` — the original `node:sqlite` version — are
+gone as of this PR. Two reasons, and the first is the serious one.
+
+It authenticated by trusting an `x-triaghe-actor` request header, which is only
+safe while nothing can reach the port. Its own header comment recommended
+exposing it with `tailscale serve`, and doing that hands owner identity to any
+caller who omits the header: enough to approve a pending draft and post it to
+GitHub under the App credential. A fallback that is one documented step away
+from impersonation is not a fallback.
+
+It had also stopped working. It serves `web/`, and the browser client now
+expects `{items, total}` from `/api/items`, revision-bound approval, and the
+draft-request routes — none of which the prototype implements. The README
+claimed it still ran; that had quietly become false.
+
+Keeping it as insurance against an unproven Worker was the argument for
+retaining it, and that argument does not survive contact with `git`: the last
+commit containing it is a `git checkout` away, and nothing about deleting it
+from `HEAD` removes that option.

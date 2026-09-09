@@ -121,3 +121,42 @@ test('a draft that is no longer pending cannot be edited', async () => {
   const res = await call(env, 'POST', `/api/drafts/${id}/edit`, { body: 'too late' });
   assert.equal(res.status, 409);
 });
+
+test('a posted draft cannot be rejected afterwards', async () => {
+  const env = makeEnv(APP);
+  const item = seedItem(env);
+  const id = seedDraft(env, item);
+
+  countingFetch(githubOk);
+  const approved = await call(env, 'POST', `/api/drafts/${id}/approve`, { expected_revision: 1 });
+  assert.equal(approved.status, 200);
+
+  // A stale tab clicking discard must not record a rejection for a draft that
+  // is already on GitHub.
+  const res = await call(env, 'POST', `/api/drafts/${id}/reject`, {});
+  assert.equal(res.status, 409);
+
+  const row = env.raw.prepare('SELECT status FROM drafts WHERE id=?').get(id);
+  assert.equal(row.status, 'posted');
+});
+
+test('queue completion must name a draft belonging to its own item', async () => {
+  const env = makeEnv();
+  const mine = seedItem(env);
+  const other = seedItem(env, { id: 'o/r#issue#2', number: 2 });
+  const foreign = seedDraft(env, other);
+
+  await call(env, 'POST', `/api/items/${encodeURIComponent(mine)}/draft-request`, {});
+  const reqId = Number(env.raw.prepare('SELECT id FROM draft_requests WHERE item_id=?').get(mine).id);
+  await call(env, 'POST', `/api/draft-requests/${reqId}/claim`, {}, agent);
+
+  const missing = await call(env, 'POST', `/api/draft-requests/${reqId}/complete`, {}, agent);
+  assert.equal(missing.status, 400, 'a success with no draft_id closes the request for nothing');
+
+  const wrong = await call(env, 'POST', `/api/draft-requests/${reqId}/complete`,
+    { draft_id: foreign }, agent);
+  assert.equal(wrong.status, 400, 'a draft on another item is not this request being done');
+
+  const still = env.raw.prepare('SELECT status FROM draft_requests WHERE id=?').get(reqId);
+  assert.equal(still.status, 'claimed', 'the request must stay open, not silently close');
+});

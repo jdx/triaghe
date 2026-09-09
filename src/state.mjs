@@ -173,7 +173,13 @@ export function computeState(item, triage, owner) {
   // Yields to a person on the same terms Releases does. "This bump breaks the
   // macOS build" belongs in the inbox no matter who opened the PR.
   if (item.author_is_bot && !personWaiting) {
-    return { state: 'chore', reason: `opened by ${item.author} — merge or close` };
+    // The instruction has to match the kind. Renovate opens a Dependency
+    // Dashboard *issue* as well as pull requests, and telling somebody to merge
+    // an issue is the kind of small wrongness that makes a board feel
+    // approximate — which is expensive here, because the whole proposition is
+    // that what it says can be believed.
+    const what = item.kind === 'pr' ? 'merge or close' : 'close when handled';
+    return { state: 'chore', reason: `opened by ${item.author} — ${what}` };
   }
 
   // Nothing has happened at all. Only reachable for an item with no author and

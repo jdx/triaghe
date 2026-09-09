@@ -102,3 +102,47 @@ test('a snooze still wins over the release lane', () => {
   const s = computeState(openPr({ labels: '["release"]' }), { snoozed_until: until });
   assert.equal(s.state, 'snoozed');
 });
+
+test('a person commenting on a release PR puts it back in the inbox', () => {
+  // A release cut is a chore right up until somebody turns up on it. Both the
+  // Mentions filter and the badge require `needs_you`, so an unconditional
+  // release lane would have made tagging the owner on a release PR the one
+  // reliable way to render a direct request invisible.
+  const asked = openPr({
+    labels: '["release"]',
+    last_actor: 'alice',
+    last_actor_at: '2026-06-02T00:00:00Z',
+    last_human_at: '2026-06-02T00:00:00Z',
+    last_human_actor: 'alice',
+    last_owner_at: '2026-06-01T12:00:00Z',
+    last_mention_at: '2026-06-02T00:00:00Z',
+    last_mention_actor: 'alice',
+  });
+  const s = computeState(asked, null);
+  assert.equal(s.state, 'needs_you', 'a person waiting outranks the release lane');
+  assert.match(s.reason, /alice/, 'and the reason names them, not the release');
+});
+
+test('a release PR the owner already answered goes back to being a chore', () => {
+  const answered = openPr({
+    labels: '["release"]',
+    last_human_at: '2026-06-02T00:00:00Z',
+    last_human_actor: 'alice',
+    last_owner_at: '2026-06-03T00:00:00Z',
+    last_actor: 'jdx',
+    last_actor_at: '2026-06-03T00:00:00Z',
+  });
+  assert.equal(computeState(answered, null).state, 'release');
+});
+
+test('bot chatter on a release PR does not pull it into the inbox', () => {
+  // Greptile and friends comment on release PRs constantly. Only a person
+  // counts as somebody waiting.
+  const noisy = openPr({
+    labels: '["release"]',
+    last_actor: 'greptile-apps',
+    last_actor_at: '2026-06-05T00:00:00Z',
+    last_actor_is_bot: 1,
+  });
+  assert.equal(computeState(noisy, null).state, 'release');
+});

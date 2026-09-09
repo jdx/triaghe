@@ -75,7 +75,19 @@ export function computeState(item, triage) {
   // Not hidden. `?state=release` and the Releases tab still list them, and the
   // feed shows them regardless, because an inbox filter that loses a pending
   // release is worse than one that never existed.
-  if (isReleasePr(item)) {
+  //
+  // It also yields to a person. A release PR is a chore right up until somebody
+  // turns up on it — "this one breaks the macOS build", "hold this until #400
+  // lands" — and that comment has to reach the inbox like any other. Without
+  // the check the lane is unconditional, and because both the Mentions filter
+  // and the badge require `needs_you`, tagging the owner on a release PR would
+  // have been the one way to make a direct request invisible.
+  const lastOwner = item.last_owner_at ? Date.parse(item.last_owner_at) : 0;
+  const personWaiting = inbound.human
+    && inbound.at
+    && Date.parse(inbound.at) > lastOwner;
+
+  if (isReleasePr(item) && !personWaiting) {
     return { state: 'release', reason: `release cut by ${item.author} — merge to ship` };
   }
 
@@ -83,8 +95,6 @@ export function computeState(item, triage) {
   // no comments, which GitHub should not produce, but the state machine should
   // not depend on that.
   if (!inbound.at) return { state: 'awaiting_them', reason: 'no activity' };
-
-  const lastOwner = item.last_owner_at ? Date.parse(item.last_owner_at) : 0;
 
   if (Date.parse(inbound.at) > lastOwner) {
     const reason = inbound.human

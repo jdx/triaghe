@@ -56,11 +56,21 @@ export function computeState(item, triage, owner) {
   // records the activity timestamp it was cleared at; any later activity used
   // to undo that, and Socket posting its scan report an hour later counts as
   // later activity. The owner's decision was being overturned by a robot.
+  //
+  // When a person does arrive, the mark stops applying — it does not force the
+  // item back into the inbox. That distinction used to be missing: this branch
+  // returned `needs_you` directly, so nothing below it ever ran, and an item
+  // that was marked, commented on, and then *merged* stayed in the inbox as
+  // "reopened" indefinitely — both of azohra's bootstrap PRs sat there after the
+  // owner merged them without commenting. Falling through lets the ordinary
+  // rules decide, which gets a second case right too: if the owner has already
+  // answered whoever reopened it, it belongs in Waiting, not the inbox.
+  let reopenedBy = null;
   if (triage?.outcome) {
     const newer = inbound.human && inbound.at && triage.marked_at_activity
       && Date.parse(inbound.at) > Date.parse(triage.marked_at_activity);
     if (!newer) return { state: 'done', reason: `marked ${triage.outcome}` };
-    return { state: 'needs_you', reason: `reopened: ${inbound.who} replied` };
+    reopenedBy = inbound.who;
   }
 
   // Closed is not the same as finished. People keep talking on closed threads —
@@ -214,7 +224,8 @@ export function computeState(item, triage, owner) {
   if (personWaiting) {
     return {
       state: 'needs_you',
-      reason: lastOwner ? `${inbound.who} replied after you` : 'no reply yet',
+      reason: reopenedBy ? `reopened: ${reopenedBy} replied`
+        : lastOwner ? `${inbound.who} replied after you` : 'no reply yet',
     };
   }
 

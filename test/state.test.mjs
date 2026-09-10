@@ -129,3 +129,47 @@ test('a person on a closed thread still reopens it, even after a bot spoke later
   assert.equal(s.state, 'needs_you');
   assert.match(s.reason, /alice/);
 });
+
+test('a marked item a person reopened settles when it is then merged', () => {
+  // The exact shape of jdx/mise#12984 and #12983: cleared in the baseline reset,
+  // the contributor replied, and the owner merged it two hours later without
+  // commenting. The mark branch returned needs_you before the resolved branch
+  // ever ran, so the merge could not be seen and both sat in the inbox.
+  const marked = { outcome: 'closed', marked_at_activity: '2026-06-01T00:00:00Z' };
+  const merged = closed('2026-06-02T00:00:00Z', {
+    state: 'MERGED',
+    resolved_at: '2026-06-03T00:00:00Z',
+  });
+  assert.equal(computeState(merged, marked).state, 'done');
+});
+
+test('a person arriving after the merge still brings it back', () => {
+  // The guard in the other direction: falling through must not make a merge
+  // swallow a comment that came after it.
+  const marked = { outcome: 'closed', marked_at_activity: '2026-06-01T00:00:00Z' };
+  const merged = closed('2026-06-04T00:00:00Z', {
+    state: 'MERGED',
+    resolved_at: '2026-06-03T00:00:00Z',
+  });
+  const s = computeState(merged, marked);
+  assert.equal(s.state, 'needs_you');
+  assert.match(s.reason, /alice commented after it was merged/);
+});
+
+test('a reopened mark the owner has since answered is waiting, not inbox', () => {
+  // The case the old early return also got wrong: it reopened on any person
+  // newer than the mark, even one the owner had already replied to.
+  const marked = { outcome: 'closed', marked_at_activity: '2026-06-01T00:00:00Z' };
+  const open = closed('2026-06-02T00:00:00Z', {
+    state: 'OPEN', resolved_at: null, last_owner_at: '2026-06-03T00:00:00Z',
+  });
+  assert.equal(computeState(open, marked).state, 'awaiting_them');
+});
+
+test('a mark a person reopens still says so', () => {
+  const marked = { outcome: 'closed', marked_at_activity: '2026-06-01T00:00:00Z' };
+  const open = closed('2026-06-02T00:00:00Z', { state: 'OPEN', resolved_at: null });
+  const s = computeState(open, marked);
+  assert.equal(s.state, 'needs_you');
+  assert.equal(s.reason, 'reopened: alice replied');
+});

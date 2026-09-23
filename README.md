@@ -19,10 +19,10 @@ web/markdown.js  markdown -> DOM nodes, for text written by strangers
 
 ## Why not something off the shelf
 
-`mise`, `hk` and `fnox` have issues effectively disabled — **Discussions are the
-main intake channel**. GitHub Projects cannot hold discussions; its schema is
+For `mise`, `hk` and `fnox`, **Discussions are a major intake channel** alongside
+issues. GitHub Projects cannot hold discussions; its schema is
 `ProjectV2ItemContent = DraftIssue | Issue | PullRequest`. A Projects board
-would miss most of the real inbound. Octobox is notification-shaped, which is
+would miss much of the real inbound. Octobox is notification-shaped, which is
 the model that already doesn't work. gh-dash is terminal-only with no shared
 state.
 
